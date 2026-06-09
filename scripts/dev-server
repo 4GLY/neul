@@ -1,0 +1,338 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+
+COMMAND=${1:-}
+if [ -n "$COMMAND" ]; then
+	shift
+fi
+
+HOST=${NEUL_DEV_SERVER_HOST:-127.0.0.1}
+PORT=${NEUL_DEV_SERVER_PORT:-8080}
+SESSION=${NEUL_DEV_SERVER_SESSION:-neul-demo-server}
+STATE_DIR=${NEUL_DEV_SERVER_STATE_DIR:-data/dev-server}
+SERVER_COMMAND=${NEUL_SERVER_CMD:-go run ./cmd/neul-server}
+STATIC_DIR=${NEUL_STATIC_DIR:-web/dist}
+STARTUP_ATTEMPTS=${NEUL_DEV_SERVER_STARTUP_ATTEMPTS:-60}
+CURL_MAX_TIME=${NEUL_DEV_SERVER_CURL_MAX_TIME:-2}
+
+usage() {
+	cat <<'EOF'
+Usage: ./scripts/dev-server <start|status|logs|stop> [options]. The subcommand must come first.
+For server executable paths with spaces, wrap the command in a helper script.
+EOF
+}
+
+abs_path() {
+	case "$1" in
+		/*) printf '%s\n' "$1" ;;
+		*) printf '%s/%s\n' "$REPO_ROOT" "$1" ;;
+	esac
+}
+
+shell_quote() {
+	printf "'"
+	printf '%s' "$1" | sed "s/'/'\\\\''/g"
+	printf "'"
+}
+
+parse_args() {
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--host)
+				require_value "$@"
+				HOST=$2
+				shift 2
+				;;
+			--port)
+				require_value "$@"
+				PORT=$2
+				shift 2
+				;;
+			--state-dir)
+				require_value "$@"
+				STATE_DIR=$2
+				shift 2
+				;;
+			--session)
+				require_value "$@"
+				SESSION=$2
+				shift 2
+				;;
+			--server-command)
+				require_value "$@"
+				SERVER_COMMAND=$2
+				shift 2
+				;;
+			--help|-h)
+				usage; exit 0
+				;;
+			*)
+				printf 'unknown option: %s\n' "$1" >&2
+				usage >&2
+				exit 2
+				;;
+		esac
+	done
+}
+
+require_value() {
+	if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+		printf 'missing value for %s\n' "$1" >&2
+		exit 2
+	fi
+	case "$2" in
+		-*)
+			printf 'invalid value for %s: %s\n' "$1" "$2" >&2
+			exit 2
+			;;
+	esac
+}
+
+state_paths() {
+	STATE_DIR_ABS=$(abs_path "$STATE_DIR")
+	LOG_FILE="$STATE_DIR_ABS/server.log"
+	META_FILE="$STATE_DIR_ABS/meta.env"
+	RUNNER_FILE="$STATE_DIR_ABS/run-server-$$.sh"
+	RUNNER_LATEST_FILE="$STATE_DIR_ABS/run-server.sh"
+	DB_FILE="$STATE_DIR_ABS/neul.sqlite"
+	HOME_DIR="$STATE_DIR_ABS/home"
+	STATIC_DIR_ABS=$(abs_path "$STATIC_DIR")
+}
+
+tmux_required() {
+	if ! command -v tmux >/dev/null 2>&1; then
+		printf 'tmux is required for scripts/dev-server\n' >&2
+		exit 1
+	fi
+}
+
+has_session() {
+	tmux has-session -t "=$SESSION" >/dev/null 2>&1
+}
+
+validate_server_command() {
+	first_word=${SERVER_COMMAND%% *}
+	case "$first_word" in
+		\"*|\'*)
+			printf 'server command executable path cannot be quoted; wrap it in a script without spaces\n' >&2
+			exit 1
+			;;
+	esac
+	case "$first_word" in
+		*/*)
+			if [ ! -x "$first_word" ] && [ ! -x "$REPO_ROOT/$first_word" ]; then
+				printf 'server command not found: %s\n' "$first_word" >&2
+				exit 1
+			fi
+			;;
+		*)
+			if ! command -v "$first_word" >/dev/null 2>&1; then
+				printf 'server command not found: %s\n' "$first_word" >&2
+				exit 1
+			fi
+			;;
+	esac
+}
+
+dashboard_url() {
+	display_host=$HOST
+	if [ "$display_host" = "0.0.0.0" ] || [ "$display_host" = "::" ]; then
+		display_host=127.0.0.1
+	fi
+	case "$display_host" in
+		*:*) printf 'http://[%s]:%s/\n' "$display_host" "$PORT" ;;
+		*) printf 'http://%s:%s/\n' "$display_host" "$PORT" ;;
+	esac
+}
+
+tailnet_url() {
+	/bin/sh "$SCRIPT_DIR/dev-server-tailnet-url" "$HOST" "$PORT"
+}
+
+write_meta() {
+	tailnet=$(tailnet_url)
+	{
+		printf 'HOST=%s\n' "$HOST"
+		printf 'PORT=%s\n' "$PORT"
+		printf 'SESSION=%s\n' "$SESSION"
+		printf 'STATE_DIR_ABS=%s\n' "$STATE_DIR_ABS"
+		printf 'LOG_FILE=%s\n' "$LOG_FILE"
+		printf 'DASHBOARD_URL=%s\n' "$(dashboard_url)"
+		printf 'TAILNET_URL=%s\n' "$tailnet"
+	} > "$META_FILE"
+}
+
+load_meta() {
+	if [ -f "$META_FILE" ]; then
+		DASHBOARD_URL=$(meta_value DASHBOARD_URL)
+		TAILNET_URL=$(meta_value TAILNET_URL)
+		log_file_meta=$(meta_value LOG_FILE)
+		if [ -n "$log_file_meta" ]; then
+			LOG_FILE=$log_file_meta
+		fi
+	else
+		DASHBOARD_URL=$(dashboard_url)
+		TAILNET_URL=$(tailnet_url)
+	fi
+	STOP_COMMAND="./scripts/dev-server stop --state-dir $(shell_quote "$STATE_DIR") --session $(shell_quote "$SESSION")"
+	LOGS_COMMAND="./scripts/dev-server logs --state-dir $(shell_quote "$STATE_DIR") --session $(shell_quote "$SESSION")"
+}
+
+meta_value() {
+	awk -v key="$1" 'index($0, key "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$META_FILE"
+}
+
+setup_token() {
+	if [ ! -f "$LOG_FILE" ]; then
+		return 0
+	fi
+	awk '/neul setup token:/ { if (match($0, /setup_[A-Za-z0-9_-]+/)) { print substr($0, RSTART, RLENGTH); exit } }' "$LOG_FILE" 2>/dev/null || true
+}
+
+server_healthy() {
+	if ! command -v curl >/dev/null 2>&1; then
+		return 1
+	fi
+	curl -fsS --max-time "$CURL_MAX_TIME" "$(dashboard_url)api/healthz" >/dev/null 2>&1
+}
+
+wait_for_start() {
+	attempt=0
+	while [ "$attempt" -lt "$STARTUP_ATTEMPTS" ]; do
+		if ! has_session; then
+			printf 'demo server exited during startup; recent logs:\n' >&2
+			tail -n 40 "$LOG_FILE" >&2 2>/dev/null || true
+			exit 1
+		fi
+		if [ -n "$(setup_token)" ] || server_healthy; then
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	printf 'demo server did not become ready before the startup timeout; recent logs:\n' >&2
+	tail -n 40 "$LOG_FILE" >&2 2>/dev/null || true
+	tmux kill-session -t "=$SESSION" >/dev/null 2>&1 || true
+	rm -f "$META_FILE" "$STATE_DIR_ABS"/run-server-*.sh "$RUNNER_LATEST_FILE"
+	exit 1
+}
+
+write_runner() {
+	{
+		printf '#!/bin/sh\n'
+		printf 'cd %s || exit 1\n' "$(shell_quote "$REPO_ROOT")"
+		printf 'export NEUL_ADDR=%s\n' "$(shell_quote "$HOST:$PORT")"
+		printf 'export NEUL_DB=%s\n' "$(shell_quote "$DB_FILE")"
+		printf 'export NEUL_HOME_DIR=%s\n' "$(shell_quote "$HOME_DIR")"
+		printf 'export NEUL_STATIC_DIR=%s\n' "$(shell_quote "$STATIC_DIR_ABS")"
+		printf 'exec %s >> %s 2>&1\n' "$SERVER_COMMAND" "$(shell_quote "$LOG_FILE")"
+	} > "$RUNNER_FILE"
+	chmod +x "$RUNNER_FILE"
+	cp "$RUNNER_FILE" "$RUNNER_LATEST_FILE"
+}
+
+print_summary() {
+	state=$1
+	load_meta
+	token=
+	if [ "$state" = "running" ] || [ "$state" = "already running" ]; then
+		token=$(setup_token)
+	fi
+	printf 'Status: %s\n' "$state"
+	if [ -n "$token" ]; then
+		printf 'Setup token: %s\n' "$token"
+	else
+		printf 'Setup token: unavailable\n'
+	fi
+	printf 'Dashboard URL: %s\n' "$DASHBOARD_URL"
+	if [ -n "${TAILNET_URL:-}" ]; then
+		printf 'Tailnet URL: %s\n' "$TAILNET_URL"
+	else
+		printf 'Tailnet URL: unavailable\n'
+	fi
+	printf 'Logs command: %s\n' "$LOGS_COMMAND"
+	printf 'Stop command: %s\n' "$STOP_COMMAND"
+	printf 'Log file: %s\n' "$LOG_FILE"
+}
+
+start_server() {
+	tmux_required
+	mkdir -p "$STATE_DIR_ABS" "$HOME_DIR"
+	if has_session; then
+		print_summary "already running"
+		return 0
+	fi
+	validate_server_command
+	rm -f "$STATE_DIR_ABS"/run-server-*.sh "$RUNNER_LATEST_FILE"
+	: > "$LOG_FILE"
+	write_meta
+	write_runner
+	tmux new-session -d -s "$SESSION" "$RUNNER_FILE"
+	wait_for_start
+	print_summary "running"
+}
+
+status_server() {
+	tmux_required
+	if has_session; then
+		print_summary "running"
+	else
+		print_summary "stopped"
+	fi
+}
+
+logs_server() {
+	if [ ! -f "$LOG_FILE" ]; then
+		printf 'log file was not found: %s\n' "$LOG_FILE" >&2
+		exit 1
+	fi
+	cat "$LOG_FILE"
+}
+
+stop_server() {
+	tmux_required
+	if has_session; then
+		tmux kill-session -t "=$SESSION"
+		attempt=0
+		while has_session && [ "$attempt" -lt 5 ]; do
+			attempt=$((attempt + 1))
+			sleep 1
+		done
+		sleep 1
+		if has_session; then
+			printf 'failed to stop %s\n' "$SESSION" >&2
+			exit 1
+		fi
+		rm -f "$META_FILE" "$STATE_DIR_ABS"/run-server-*.sh "$RUNNER_LATEST_FILE"
+		printf 'Stopped %s\n' "$SESSION"
+	else
+		printf 'Status: stopped\n'
+	fi
+}
+
+parse_args "$@"
+state_paths
+
+case "$COMMAND" in
+	start)
+		start_server
+		;;
+	status)
+		status_server
+		;;
+	logs)
+		logs_server
+		;;
+	stop)
+		stop_server
+		;;
+	help|--help|-h|"") usage ;;
+	*)
+		printf 'unknown command: %s\n' "$COMMAND" >&2
+		usage >&2
+		exit 2
+		;;
+esac
