@@ -31,6 +31,7 @@ abs_path() {
 }
 
 DEMO_BIN_ABS=$(abs_path "$DEMO_BIN")
+DEMO_BIN_NAME=$(basename "$DEMO_BIN_ABS")
 DEMO_DB_ABS=$(abs_path "$DEMO_DB")
 DEMO_HOME_ABS=$(abs_path "$DEMO_HOME")
 DEMO_STATIC_DIR_ABS=$(abs_path "$DEMO_STATIC_DIR")
@@ -81,8 +82,55 @@ validate_start_config() {
 	fi
 }
 
+read_demo_pid() {
+	[ -f "$DEMO_PID" ] || return 1
+	pid=$(cat "$DEMO_PID")
+	case "$pid" in
+		''|*[!0123456789]*)
+			return 1
+			;;
+	esac
+	printf '%s\n' "$pid"
+}
+
+demo_pid_command() {
+	ps -p "$1" -o command= 2>/dev/null || true
+}
+
+demo_pid_name() {
+	ps -p "$1" -o comm= 2>/dev/null || true
+}
+
+pid_owned_by_demo() {
+	pid=$1
+	kill -0 "$pid" 2>/dev/null || return 1
+	command_name=$(demo_pid_name "$pid")
+	command_line=$(demo_pid_command "$pid")
+	[ -n "$command_name" ] && [ -n "$command_line" ] || return 1
+	case "$command_name" in
+		"$DEMO_BIN_NAME"|*"/$DEMO_BIN_NAME")
+			;;
+		*)
+			return 1
+			;;
+	esac
+	case "$command_line" in
+		*"$DEMO_BIN_ABS"*)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+clear_demo_markers() {
+	rm -f "$DEMO_PID" "$DEMO_ADDR_FILE"
+}
+
 pid_running() {
-	[ -f "$DEMO_PID" ] && kill -0 "$(cat "$DEMO_PID")" 2>/dev/null
+	pid=$(read_demo_pid) || return 1
+	pid_owned_by_demo "$pid"
 }
 
 extract_setup_token() {
@@ -95,7 +143,27 @@ stop_demo() {
 		return 0
 	fi
 
-	pid=$(cat "$DEMO_PID")
+	pid=$(read_demo_pid) || {
+		printf 'Demo pid marker at %s is stale or invalid\n' "$DEMO_PID"
+		clear_demo_markers
+		return 0
+	}
+	if ! kill -0 "$pid" 2>/dev/null; then
+		printf 'Demo pid %s is not running\n' "$pid"
+		clear_demo_markers
+		return 0
+	fi
+	if ! pid_owned_by_demo "$pid"; then
+		command_line=$(demo_pid_command "$pid")
+		if [ -n "$command_line" ]; then
+			printf 'Demo pid %s is not the expected neul demo process; removing stale marker\n' "$pid"
+		else
+			printf 'Demo pid %s could not be verified; removing stale marker\n' "$pid"
+		fi
+		clear_demo_markers
+		return 0
+	fi
+
 	if kill -0 "$pid" 2>/dev/null; then
 		kill "$pid" 2>/dev/null || true
 		for _ in 1 2 3 4 5 6 7 8 9 10; do
@@ -115,7 +183,7 @@ stop_demo() {
 	else
 		printf 'Demo pid %s is not running\n' "$pid"
 	fi
-	rm -f "$DEMO_PID" "$DEMO_ADDR_FILE"
+	clear_demo_markers
 }
 
 wait_for_health() {
@@ -158,7 +226,7 @@ start_demo() {
 		printf 'Stop: make demo-stop\n'
 		return 0
 	fi
-	rm -f "$DEMO_PID" "$DEMO_ADDR_FILE"
+	clear_demo_markers
 
 	if [ ! -d web/node_modules ]; then
 		pnpm --dir web install --frozen-lockfile

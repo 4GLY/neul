@@ -30,4 +30,5 @@ verify-docs:
 	@sh scripts/validate-demo-docs.sh
 
 verify-demo:
+	@sh scripts/verify-demo-pid-safety.sh
 	@sh scripts/verify-demo-smoke.sh
