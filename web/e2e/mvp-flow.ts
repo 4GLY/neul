@@ -4,6 +4,10 @@ import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 import {
+	buildEnrollCommand,
+	buildPortableShellInvocation,
+} from "../src/enrollCommand";
+import {
 	evidenceDir,
 	qaDir,
 	repoRoot,
@@ -30,11 +34,9 @@ export async function visibleOnboardMachine(
 	}
 	const configDir = join(fixture.tempDir, "agent-config");
 	mkdirSync(configDir, { recursive: true });
-	const command = generated.replace(
-		" --connect-once",
-		` --config-dir ${shellQuote(configDir)} --connect-once`,
-	);
-	const output = execFileSync("zsh", ["-lc", command], {
+	const command = buildEnrollCommand(generated, configDir);
+	const shell = buildPortableShellInvocation(command);
+	const output = execFileSync(shell.file, shell.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvWithoutGoroot(),
@@ -165,8 +167,4 @@ function processEnvWithoutGoroot(): NodeJS.ProcessEnv {
 	const next = { ...process.env };
 	delete next.GOROOT;
 	return next;
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
 }
