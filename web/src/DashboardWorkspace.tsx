@@ -2,6 +2,7 @@ import type { ReactElement } from "react";
 import { useMemo } from "react";
 import type { DashboardData, MachineEvent } from "./api";
 import { copy } from "./copy";
+import { latestReconcileLabel } from "./dashboardView";
 import {
 	DesiredLivePreview,
 	MachineFilters,
@@ -37,6 +38,7 @@ type DashboardWorkspaceProps = {
 	readonly onRepairDrift: () => void;
 	readonly onResourceSaved: () => void;
 	readonly onReconcile: () => void;
+	readonly onRetryLoad: () => void;
 	readonly onSelectedMachineChange: (next: string) => void;
 	readonly onStatusFilterChange: (next: "all" | MachineStatus) => void;
 	readonly onViewToggle: () => void;
@@ -64,6 +66,7 @@ export function DashboardWorkspace({
 	onRepairDrift,
 	onResourceSaved,
 	onReconcile,
+	onRetryLoad,
 	onSelectedMachineChange,
 	onStatusFilterChange,
 	onViewToggle,
@@ -75,6 +78,9 @@ export function DashboardWorkspace({
 	const selectedMachine =
 		machines.find((machine) => machine.id === selectedMachineId) ??
 		fallbackMachine;
+	const canRenderDashboard = dashboard !== null && loadState !== "loading";
+	const canRenderFleet = canRenderDashboard && machines.length > 0;
+	const canRenderDetails = canRenderDashboard && selectedMachine !== undefined;
 	const visibleMachines = useMemo(
 		() =>
 			machines.filter((machine) => {
@@ -85,19 +91,6 @@ export function DashboardWorkspace({
 			}),
 		[machines, osFilter, statusFilter],
 	);
-
-	const healthyCount = machines.filter(
-		(machine) => machine.status === "healthy",
-	).length;
-	const driftedCount = machines.filter(
-		(machine) => machine.status === "drifted",
-	).length;
-	const pendingCount = machines.filter(
-		(machine) => machine.status === "pending",
-	).length;
-	const onlineCount = machines.filter(
-		(machine) => machine.status !== "offline",
-	).length;
 
 	return (
 		<main className="shell">
@@ -143,13 +136,12 @@ export function DashboardWorkspace({
 						{activityNotice === "" ? null : (
 							<StatePanel title="작업 대기열" body={activityNotice} />
 						)}
-						<MetricStrip
-							healthyCount={healthyCount}
-							driftedCount={driftedCount}
-							pendingCount={pendingCount}
-							machineCount={machines.length}
-							onlineCount={onlineCount}
-						/>
+						{canRenderFleet && dashboard !== null ? (
+							<MetricStrip
+								metrics={dashboard.metrics}
+								latestReconcile={latestReconcileLabel(machines)}
+							/>
+						) : null}
 						{loadState === "loading" ? (
 							<StatePanel
 								title="불러오는 중"
@@ -160,6 +152,8 @@ export function DashboardWorkspace({
 							<StatePanel
 								title="대시보드를 불러오지 못했습니다"
 								body="서버 연결을 확인한 뒤 다시 시도하세요."
+								action="다시 시도"
+								onAction={onRetryLoad}
 							/>
 						) : null}
 						{loadState === "ready" && machines.length === 0 ? (
@@ -183,15 +177,10 @@ export function DashboardWorkspace({
 								onSaved={onResourceSaved}
 							/>
 						) : null}
-						{loadState === "ready" &&
-						selectedMachine !== undefined &&
-						activeView === "ledger" ? (
-							<DesiredLivePreview
-								resources={resources}
-								selectedMachine={selectedMachine}
-							/>
+						{canRenderDetails && activeView === "ledger" ? (
+							<DesiredLivePreview resources={resources} />
 						) : null}
-						{loadState === "ready" && machines.length > 0 ? (
+						{canRenderFleet ? (
 							<MachineFilters
 								statusFilter={statusFilter}
 								osFilter={osFilter}
@@ -199,20 +188,15 @@ export function DashboardWorkspace({
 								onOsChange={onOsFilterChange}
 							/>
 						) : null}
-						{loadState === "ready" && machines.length > 0 ? (
+						{canRenderFleet ? (
 							<MachineTable
 								machines={visibleMachines}
 								selectedMachineId={selectedMachineId}
 								onSelect={onSelectedMachineChange}
 							/>
 						) : null}
-						{loadState === "ready" &&
-						selectedMachine !== undefined &&
-						activeView === "dashboard" ? (
-							<DesiredLivePreview
-								resources={resources}
-								selectedMachine={selectedMachine}
-							/>
+						{canRenderDetails && activeView === "dashboard" ? (
+							<DesiredLivePreview resources={resources} />
 						) : null}
 					</section>
 					<aside className="side-panel">

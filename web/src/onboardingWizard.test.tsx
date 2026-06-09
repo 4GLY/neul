@@ -36,7 +36,15 @@ describe("OnboardingWizard", () => {
 				expiresAt: "2026-06-06T12:10:00Z",
 			},
 			{
-				metrics: { total: 0, healthy: 0, drifted: 0, pending: 0 },
+				metrics: {
+					total: 0,
+					healthy: 0,
+					drifted: 0,
+					pending: 0,
+					offline: 0,
+					blocked: 0,
+					unknown: 0,
+				},
 				machines: [],
 				activity: [],
 				ledger: [],
@@ -74,7 +82,15 @@ describe("OnboardingWizard", () => {
 				expiresAt: "2026-06-06T12:10:00Z",
 			},
 			{
-				metrics: { total: 0, healthy: 0, drifted: 0, pending: 0 },
+				metrics: {
+					total: 0,
+					healthy: 0,
+					drifted: 0,
+					pending: 0,
+					offline: 0,
+					blocked: 0,
+					unknown: 0,
+				},
 				machines: [],
 				activity: [],
 				ledger: [],

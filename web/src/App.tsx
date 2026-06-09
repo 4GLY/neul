@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DashboardData, MachineEvent } from "./api";
 import {
 	loadDashboardData,
@@ -8,6 +8,10 @@ import {
 	repairDrift,
 } from "./api";
 import { DashboardWorkspace } from "./DashboardWorkspace";
+import {
+	selectDashboardMachineId,
+	shouldPreserveEventsOnMachineTransition,
+} from "./dashboardView";
 import { FirstRunSetup } from "./FirstRunSetup";
 import type { Machine, MachineStatus } from "./types";
 
@@ -29,22 +33,25 @@ export function App(): ReactElement {
 	const [events, setEvents] = useState<readonly MachineEvent[]>([]);
 	const [activityNotice, setActivityNotice] = useState("");
 	const [onboardingOpen, setOnboardingOpen] = useState(false);
+	const eventRequestId = useRef(0);
 
 	const showSetup = useCallback((): void => {
 		setDashboard(null);
 		setSelectedMachineId("");
 		setEvents([]);
 		setActivityNotice("");
+		setOnboardingOpen(false);
+		setEditorOpen(false);
 		setLoadState("setup");
 	}, []);
 
 	const refreshDashboard = useCallback(async (): Promise<void> => {
-		setLoadState("loading");
+		setLoadState((current) => (current === "ready" ? "ready" : "loading"));
 		try {
 			const data = await loadDashboardData();
 			setDashboard(data);
-			setSelectedMachineId(
-				(current) => current || (data.machines[0]?.id ?? ""),
+			setSelectedMachineId((current) =>
+				selectDashboardMachineId(current, data.machines),
 			);
 			setLoadState("ready");
 		} catch (error) {
@@ -60,9 +67,29 @@ export function App(): ReactElement {
 		void refreshDashboard();
 	}, [refreshDashboard]);
 
+	const machines = dashboard?.machines ?? [];
+	const fallbackMachine = machines[0];
 	const selectedMachine =
-		dashboard?.machines.find((machine) => machine.id === selectedMachineId) ??
-		dashboard?.machines[0];
+		machines.find((machine) => machine.id === selectedMachineId) ??
+		fallbackMachine;
+	const eventMachineId = selectedMachine?.id ?? "";
+	const previousEventMachineId = useRef<string | null>(null);
+	const activeEventMachineId = useRef(eventMachineId);
+
+	useEffect(() => {
+		activeEventMachineId.current = eventMachineId;
+		if (previousEventMachineId.current === eventMachineId) {
+			return;
+		}
+		if (
+			shouldPreserveEventsOnMachineTransition(previousEventMachineId.current)
+		) {
+			previousEventMachineId.current = eventMachineId;
+			return;
+		}
+		previousEventMachineId.current = eventMachineId;
+		setEvents([]);
+	}, [eventMachineId]);
 
 	function handleReconcile(): void {
 		setRunState("running");
@@ -82,7 +109,7 @@ export function App(): ReactElement {
 				showSetup();
 				return;
 			}
-			throw error;
+			setActivityNotice("복구 명령을 만들지 못했습니다");
 		}
 	}
 
@@ -90,15 +117,24 @@ export function App(): ReactElement {
 		if (selectedMachine === undefined) {
 			return;
 		}
+		const machineID = selectedMachine.id;
+		const requestId = eventRequestId.current + 1;
+		eventRequestId.current = requestId;
 		try {
-			const nextEvents = await loadMachineEvents(selectedMachine.id);
+			const nextEvents = await loadMachineEvents(machineID);
+			if (
+				eventRequestId.current !== requestId ||
+				activeEventMachineId.current !== machineID
+			) {
+				return;
+			}
 			setEvents(nextEvents);
 		} catch (error) {
 			if (error instanceof OwnerSessionRequiredError) {
 				showSetup();
 				return;
 			}
-			throw error;
+			setActivityNotice("로그를 불러오지 못했습니다");
 		}
 	}
 
@@ -133,6 +169,9 @@ export function App(): ReactElement {
 				void refreshDashboard();
 			}}
 			onReconcile={handleReconcile}
+			onRetryLoad={() => {
+				void refreshDashboard();
+			}}
 			onSelectedMachineChange={setSelectedMachineId}
 			onStatusFilterChange={setStatusFilter}
 			onViewToggle={() =>
