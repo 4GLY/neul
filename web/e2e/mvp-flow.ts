@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
+import { buildPortableShellInvocation } from "../src/portableShell";
 import {
 	evidenceDir,
 	qaDir,
@@ -34,7 +35,8 @@ export async function visibleOnboardMachine(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
-	const output = execFileSync("zsh", ["-lc", command], {
+	const shell = buildPortableShellInvocation(command);
+	const output = execFileSync(shell.executable, shell.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvWithoutGoroot(),
