@@ -34,7 +34,7 @@ export async function visibleOnboardMachine(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
-	const output = execFileSync("zsh", ["-lc", command], {
+	const output = execFileSync("/bin/sh", ["-c", command], {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvWithoutGoroot(),
