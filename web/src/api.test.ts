@@ -1,8 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	createLocalSession,
+	createPackageResource,
 	createPairingInvite,
+	LocalSessionError,
 	loadDashboardData,
+	OwnerSessionRequiredError,
 	pollPairingInvite,
+	repairDrift,
 } from "./api";
 
 describe("loadDashboardData", () => {
@@ -253,9 +258,120 @@ describe("agent pairing API", () => {
 	});
 });
 
+describe("local owner session API", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("exchanges the setup token through a JSON POST body only", async () => {
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+			readonly body: BodyInit | null | undefined;
+			readonly credentials: RequestCredentials | undefined;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({
+					url: String(input),
+					method: init?.method,
+					body: init?.body,
+					credentials: init?.credentials,
+				});
+				return new Response(null, { status: 204 });
+			},
+		);
+
+		await createLocalSession("setup_secret");
+
+		expect(calls).toEqual([
+			{
+				url: "/api/session/local",
+				method: "POST",
+				body: JSON.stringify({ setupToken: "setup_secret" }),
+				credentials: "same-origin",
+			},
+		]);
+		expect(calls[0]?.url).not.toContain("setup_secret");
+	});
+
+	it.each([
+		["setup_token_invalid", 401],
+		["setup_token_used", 409],
+		["setup_token_expired", 410],
+	] as const)("preserves local-session error code %s", async (code, status) => {
+		vi.stubGlobal(
+			"fetch",
+			async () =>
+				new Response(
+					JSON.stringify({
+						error: { code, message: "setup token failed" },
+					}),
+					{ status, headers: { "Content-Type": "application/json" } },
+				),
+		);
+
+		await expect(createLocalSession("setup_bad")).rejects.toBeInstanceOf(
+			LocalSessionError,
+		);
+		await expect(createLocalSession("setup_bad")).rejects.toMatchObject({
+			code,
+		});
+	});
+});
+
+describe("owner mutation API auth", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("routes a missing owner session during resource mutation to setup", async () => {
+		stubUnauthorized();
+
+		await expect(
+			createPackageResource({
+				name: "kubectl",
+				sourceKind: "brew",
+				desiredVersion: "latest",
+				targetSegment: "base",
+			}),
+		).rejects.toBeInstanceOf(OwnerSessionRequiredError);
+	});
+
+	it("routes a missing owner session during pairing invite creation to setup", async () => {
+		stubUnauthorized();
+
+		await expect(createPairingInvite()).rejects.toBeInstanceOf(
+			OwnerSessionRequiredError,
+		);
+	});
+
+	it("routes a missing owner session during repair drift to setup", async () => {
+		stubUnauthorized();
+
+		await expect(repairDrift("machine_1")).rejects.toBeInstanceOf(
+			OwnerSessionRequiredError,
+		);
+	});
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
 		status,
 		headers: { "Content-Type": "application/json" },
 	});
+}
+
+function stubUnauthorized(): void {
+	vi.stubGlobal(
+		"fetch",
+		async () =>
+			new Response(
+				JSON.stringify({
+					error: { code: "unauthorized", message: "Owner session required" },
+				}),
+				{ status: 401, headers: { "Content-Type": "application/json" } },
+			),
+	);
 }

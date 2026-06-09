@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
+import { buildEnrollCommand } from "../src/enrollCommand";
 import { buildEnrollmentShellInvocation } from "../src/enrollmentShell";
 import {
 	evidenceDir,
@@ -31,10 +32,7 @@ export async function visibleOnboardMachine(
 	}
 	const configDir = join(fixture.tempDir, "agent-config");
 	mkdirSync(configDir, { recursive: true });
-	const command = generated.replace(
-		" --connect-once",
-		` --config-dir ${shellQuote(configDir)} --connect-once`,
-	);
+	const command = buildEnrollCommand(generated, configDir);
 	const invocation = buildEnrollmentShellInvocation(command);
 	const output = execFileSync(invocation.file, invocation.args, {
 		cwd: repoRoot,
@@ -186,8 +184,4 @@ export function withCommonGoPath(path: string | undefined): string {
 			return segment.length > 0 && segments.indexOf(segment) === index;
 		})
 		.join(":");
-}
-
-function shellQuote(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
 }

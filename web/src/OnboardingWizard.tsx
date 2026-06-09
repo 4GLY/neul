@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	createPairingInvite,
 	loadDashboardData,
+	OwnerSessionRequiredError,
 	pollPairingInvite,
 } from "./api";
 import type { ApiPairInitResponse } from "./apiTypes";
@@ -30,9 +31,11 @@ type WizardState =
 export function OnboardingWizard({
 	onClose,
 	onConnected,
+	onOwnerSessionRequired,
 }: {
 	readonly onClose: () => void;
 	readonly onConnected: () => void;
+	readonly onOwnerSessionRequired?: () => void;
 }): ReactElement {
 	const [state, setState] = useState<WizardState>({ kind: "creating" });
 
@@ -42,6 +45,10 @@ export function OnboardingWizard({
 			const invite = await createPairingInvite();
 			setState({ kind: "ready", invite });
 		} catch (error) {
+			if (error instanceof OwnerSessionRequiredError) {
+				onOwnerSessionRequired?.();
+				return;
+			}
 			setState({
 				kind: "error",
 				message:
@@ -50,7 +57,7 @@ export function OnboardingWizard({
 						: "등록 명령을 만들지 못했습니다.",
 			});
 		}
-	}, []);
+	}, [onOwnerSessionRequired]);
 
 	useEffect(() => {
 		void createInvite();
@@ -77,6 +84,10 @@ export function OnboardingWizard({
 					}
 				})
 				.catch((error: unknown) => {
+					if (error instanceof OwnerSessionRequiredError) {
+						onOwnerSessionRequired?.();
+						return;
+					}
 					setState({
 						kind: "error",
 						message:
@@ -89,7 +100,7 @@ export function OnboardingWizard({
 		return () => {
 			window.clearInterval(intervalId);
 		};
-	}, [state]);
+	}, [onOwnerSessionRequired, state]);
 
 	useEffect(() => {
 		if (state.kind !== "claimed_waiting_heartbeat") {
@@ -115,6 +126,10 @@ export function OnboardingWizard({
 					}
 				})
 				.catch((error: unknown) => {
+					if (error instanceof OwnerSessionRequiredError) {
+						onOwnerSessionRequired?.();
+						return;
+					}
 					setState({
 						kind: "error",
 						message:
@@ -127,7 +142,7 @@ export function OnboardingWizard({
 		return () => {
 			window.clearInterval(intervalId);
 		};
-	}, [onConnected, state]);
+	}, [onConnected, onOwnerSessionRequired, state]);
 
 	const command = useMemo(() => {
 		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {

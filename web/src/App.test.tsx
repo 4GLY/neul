@@ -87,6 +87,108 @@ describe("App API states", () => {
 		);
 	});
 
+	it("returns to setup when an owner action loses its session", async () => {
+		vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === "/api/dashboard") {
+				return jsonResponse(dashboardResponse([]));
+			}
+			if (url === "/api/resources") {
+				return jsonResponse({ resources: [] });
+			}
+			return jsonResponse({ error: { code: "unauthorized" } }, 401);
+		});
+
+		await renderApp();
+		await clickButton("첫 머신 등록");
+
+		expect(document.body.textContent).toContain("첫 실행 설정");
+		expect(document.body.textContent).not.toContain("등록 오류");
+	});
+
+	it("renders first-run setup instead of the dashboard error when the owner session is missing", async () => {
+		vi.stubGlobal("fetch", async () =>
+			jsonResponse({ error: { code: "unauthorized" } }, 401),
+		);
+
+		await renderApp();
+
+		expect(document.body.textContent).toContain("첫 실행 설정");
+		expect(document.body.textContent).toContain("setup token");
+		expect(document.body.textContent).not.toContain(
+			"대시보드를 불러오지 못했습니다",
+		);
+	});
+
+	it("exchanges a setup token and lands on the dashboard", async () => {
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+			readonly body: BodyInit | null | undefined;
+		}[] = [];
+		let dashboardAttempts = 0;
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = String(input);
+				calls.push({ url, method: init?.method, body: init?.body });
+				if (url === "/api/session/local") {
+					return new Response(null, { status: 204 });
+				}
+				if (url === "/api/dashboard") {
+					dashboardAttempts += 1;
+					if (dashboardAttempts === 1) {
+						return jsonResponse({ error: { code: "unauthorized" } }, 401);
+					}
+					return jsonResponse(dashboardResponse([]));
+				}
+				return jsonResponse({ resources: [] });
+			},
+		);
+
+		await renderApp();
+		await fillSetupToken("setup_secret");
+		await clickButton("설정 완료");
+
+		expect(calls).toContainEqual({
+			url: "/api/session/local",
+			method: "POST",
+			body: JSON.stringify({ setupToken: "setup_secret" }),
+		});
+		expect(window.location.href).not.toContain("setup_secret");
+		expect(document.title).not.toContain("setup_secret");
+		expect(document.body.textContent).toContain("머신");
+		expect(document.body.textContent).toContain("첫 머신 등록");
+	});
+
+	it.each([
+		["setup_token_invalid", 401, "setup token이 올바르지 않습니다."],
+		["setup_token_used", 409, "이미 사용된 setup token입니다."],
+		[
+			"setup_token_expired",
+			410,
+			"setup token이 만료되었습니다. 서버 콘솔에 새 setup token을 출력했습니다.",
+		],
+	] as const)("renders %s setup state", async (code, status, message) => {
+		vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+			const url = String(input);
+			if (url === "/api/session/local") {
+				return jsonResponse({ error: { code, message } }, status);
+			}
+			return jsonResponse({ error: { code: "unauthorized" } }, 401);
+		});
+
+		await renderApp();
+		await fillSetupToken("setup_bad");
+		await clickButton("설정 완료");
+
+		expect(document.body.textContent).toContain(message);
+		expect(setupTokenInput().value).toBe("");
+		expect(document.cookie).not.toContain("neul_session");
+		expect(window.location.href).not.toContain("setup_bad");
+		expect(document.title).not.toContain("setup_bad");
+	});
+
 	it("renders connected dashboard states from API data without mock fallback names", async () => {
 		stubFetchSequence([
 			dashboardResponse([
@@ -281,3 +383,33 @@ describe("App API states", () => {
 		).toContain("selected-api");
 	});
 });
+
+async function clickButton(name: string): Promise<void> {
+	const button = getButton(name);
+	await act(async () => {
+		button.click();
+	});
+	await flushApp();
+}
+
+async function fillSetupToken(value: string): Promise<void> {
+	const input = setupTokenInput();
+	await act(async () => {
+		const valueSetter = Object.getOwnPropertyDescriptor(
+			HTMLInputElement.prototype,
+			"value",
+		)?.set;
+		valueSetter?.call(input, value);
+		input.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+}
+
+function setupTokenInput(): HTMLInputElement {
+	const input = Array.from(document.querySelectorAll("input")).find(
+		(candidate) => candidate.getAttribute("aria-label") === "setup token",
+	);
+	if (!(input instanceof HTMLInputElement)) {
+		throw new Error("setup token input not found");
+	}
+	return input;
+}

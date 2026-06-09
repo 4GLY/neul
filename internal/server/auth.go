@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,10 +25,33 @@ type BootstrapResult struct {
 }
 
 func BootstrapOwner(ctx context.Context, db *sql.DB, out io.Writer) (BootstrapResult, error) {
+	return BootstrapOwnerWithTTL(ctx, db, out, setupTokenTTL)
+}
+
+func BootstrapOwnerWithTTL(ctx context.Context, db *sql.DB, out io.Writer, ttl time.Duration) (BootstrapResult, error) {
+	return BootstrapOwnerWithClock(ctx, db, out, func() time.Time {
+		return time.Now().UTC()
+	}, ttl)
+}
+
+func BootstrapOwnerWithClock(ctx context.Context, db *sql.DB, out io.Writer, clock func() time.Time, ttl ...time.Duration) (BootstrapResult, error) {
+	setupTTL := setupTokenTTL
+	if len(ttl) > 0 {
+		setupTTL = effectiveSetupTokenTTL(ttl[0])
+	}
+	now := clock().UTC()
 	var ownerID string
 	var setupTokenHash sql.NullString
-	err := db.QueryRowContext(ctx, `SELECT id, setup_token_hash FROM owners ORDER BY created_at LIMIT 1`).Scan(&ownerID, &setupTokenHash)
+	var createdAt string
+	err := db.QueryRowContext(ctx, `SELECT id, setup_token_hash, created_at FROM owners ORDER BY created_at LIMIT 1`).Scan(&ownerID, &setupTokenHash, &createdAt)
 	if err == nil {
+		if setupTokenHash.Valid && setupTokenHash.String != "" && setupTokenExpired(createdAt, now, setupTTL) {
+			token, tokenErr := rotateSetupToken(ctx, db, ownerID, now, out)
+			if tokenErr != nil {
+				return BootstrapResult{}, tokenErr
+			}
+			return BootstrapResult{OwnerID: ownerID, SetupToken: token}, nil
+		}
 		return BootstrapResult{OwnerID: ownerID}, nil
 	}
 	if err != nil && err != sql.ErrNoRows {
@@ -43,7 +68,7 @@ func BootstrapOwner(ctx context.Context, db *sql.DB, out io.Writer) (BootstrapRe
 		`INSERT INTO owners (id, setup_token_hash, created_at) VALUES (?, ?, ?)`,
 		ownerID,
 		hashSecret(token),
-		time.Now().UTC().Format(time.RFC3339Nano),
+		now.Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return BootstrapResult{}, fmt.Errorf("insert owner: %w", err)
@@ -85,7 +110,7 @@ func createDefaultProfile(ctx context.Context, db *sql.DB, ownerID string) error
 	return nil
 }
 
-func handleLocalSession(db *sql.DB) http.HandlerFunc {
+func handleLocalSession(db *sql.DB, clock func() time.Time, setupTokenWriter io.Writer, setupTTL time.Duration) http.HandlerFunc {
 	type requestBody struct {
 		SetupToken string `json:"setupToken"`
 	}
@@ -103,7 +128,8 @@ func handleLocalSession(db *sql.DB) http.HandlerFunc {
 		ctx := r.Context()
 		var ownerID string
 		var tokenHash sql.NullString
-		err := db.QueryRowContext(ctx, `SELECT id, setup_token_hash FROM owners ORDER BY created_at LIMIT 1`).Scan(&ownerID, &tokenHash)
+		var createdAt string
+		err := db.QueryRowContext(ctx, `SELECT id, setup_token_hash, created_at FROM owners ORDER BY created_at LIMIT 1`).Scan(&ownerID, &tokenHash, &createdAt)
 		if err != nil {
 			writeJSONError(w, http.StatusConflict, "owner_not_bootstrapped", "Owner is not bootstrapped.")
 			return
@@ -112,30 +138,40 @@ func handleLocalSession(db *sql.DB) http.HandlerFunc {
 			writeJSONError(w, http.StatusConflict, "setup_token_used", "Setup token was already used.")
 			return
 		}
-		if tokenHash.String != hashSecret(body.SetupToken) {
+		setupHash := hashSecret(body.SetupToken)
+		if subtle.ConstantTimeCompare([]byte(tokenHash.String), []byte(setupHash)) != 1 {
 			writeJSONError(w, http.StatusUnauthorized, "setup_token_invalid", "Setup token is invalid.")
 			return
 		}
+		now := clock().UTC()
+		if setupTokenExpired(createdAt, now, setupTTL) {
+			if _, err := rotateSetupToken(ctx, db, ownerID, now, setupTokenWriter); err != nil {
+				if errors.Is(err, errSetupTokenAlreadyUsed) {
+					writeJSONError(w, http.StatusConflict, "setup_token_used", "Setup token was already used.")
+					return
+				}
+				if errors.Is(err, errSetupTokenChanged) {
+					writeJSONError(w, http.StatusGone, "setup_token_expired", "Setup token is expired.")
+					return
+				}
+				writeJSONError(w, http.StatusInternalServerError, "setup_token_rotate_failed", "Could not rotate setup token.")
+				return
+			}
+			writeJSONError(w, http.StatusGone, "setup_token_expired", "Setup token is expired.")
+			return
+		}
 
-		sessionToken, err := randomToken("session")
+		sessionToken, err := createSessionAndConsumeSetup(ctx, db, ownerID, setupHash, now)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "token_generation_failed", "Could not create session.")
-			return
-		}
-		_, err = db.ExecContext(
-			ctx,
-			`INSERT INTO sessions (id, owner_id, session_hash, created_at) VALUES (?, ?, ?, ?)`,
-			"session_"+hashSecret(sessionToken)[:16],
-			ownerID,
-			hashSecret(sessionToken),
-			time.Now().UTC().Format(time.RFC3339Nano),
-		)
-		if err != nil {
+			if errors.Is(err, errSetupTokenAlreadyUsed) {
+				writeJSONError(w, http.StatusConflict, "setup_token_used", "Setup token was already used.")
+				return
+			}
+			if errors.Is(err, errSetupTokenChanged) {
+				writeJSONError(w, http.StatusGone, "setup_token_expired", "Setup token is expired.")
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "session_create_failed", "Could not create session.")
-			return
-		}
-		if _, err := db.ExecContext(ctx, `UPDATE owners SET setup_token_hash = NULL WHERE id = ?`, ownerID); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "setup_token_consume_failed", "Could not consume setup token.")
 			return
 		}
 
@@ -144,6 +180,7 @@ func handleLocalSession(db *sql.DB) http.HandlerFunc {
 			Value:    sessionToken,
 			Path:     "/",
 			HttpOnly: true,
+			Secure:   r.TLS != nil,
 			SameSite: http.SameSiteLaxMode,
 		})
 		w.WriteHeader(http.StatusNoContent)

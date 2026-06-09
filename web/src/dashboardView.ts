@@ -36,6 +36,12 @@ export function latestReconcileLabel(machines: readonly Machine[]): string {
 	return `${latestMachine.name} · ${latestMachine.lastReconcile}`;
 }
 
+export function shouldPreserveEventsOnMachineTransition(
+	previous: string | null,
+): boolean {
+	return previous === null || previous === "";
+}
+
 function isEarlierReconcile(
 	machine: Machine,
 	time: number,

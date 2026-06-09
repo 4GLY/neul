@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,10 +12,12 @@ import (
 )
 
 type Config struct {
-	DB        *sql.DB
-	StaticDir string
-	Clock     func() time.Time
-	HomeDir   string
+	DB               *sql.DB
+	StaticDir        string
+	Clock            func() time.Time
+	HomeDir          string
+	SetupTokenWriter io.Writer
+	SetupTokenTTL    time.Duration
 }
 
 func NewRouter(config Config) http.Handler {
@@ -26,13 +29,17 @@ func NewRouter(config Config) http.Handler {
 			config.HomeDir = homeDir
 		}
 	}
+	if config.SetupTokenWriter == nil {
+		config.SetupTokenWriter = os.Stdout
+	}
+	config.SetupTokenTTL = effectiveSetupTokenTTL(config.SetupTokenTTL)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
-	mux.HandleFunc("POST /api/session/local", handleLocalSession(config.DB))
+	mux.HandleFunc("POST /api/session/local", handleLocalSession(config.DB, config.Clock, config.SetupTokenWriter, config.SetupTokenTTL))
 	mux.Handle("POST /api/pair/init", requireOwnerSession(config.DB, handlePairInit(config.DB, config.Clock)))
 	mux.HandleFunc("POST /api/pair/claim", handlePairClaim(config.DB, config.Clock))
 	mux.Handle("GET /api/pair/poll", requireOwnerSession(config.DB, handlePairPoll(config.DB, config.Clock)))
