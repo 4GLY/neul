@@ -1,16 +1,19 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { enrollmentShellPath, withCommonGoPath } from "./mvp-flow";
+import { buildEnrollmentShellInvocation } from "../src/enrollmentShell";
+import { withCommonGoPath } from "./mvp-flow";
 import { repoRoot } from "./server-fixture";
 
 test("MVP flow enrollment command uses portable POSIX shell", () => {
 	// Given
 	const source = readFileSync(join(repoRoot, "web/e2e/mvp-flow.ts"), "utf8");
+	const invocation = buildEnrollmentShellInvocation("go run ./cmd/neul-agent");
 
 	// Then
-	expect(enrollmentShellPath).toBe("/bin/sh");
-	expect(source).toMatch(/execFileSync\s*\(\s*enrollmentShellPath/);
+	expect(invocation.file).toBe("/bin/sh");
+	expect(source).toMatch(/buildEnrollmentShellInvocation\(command\)/);
+	expect(source).toMatch(/execFileSync\s*\(\s*invocation\.file/);
 	expect(source).toMatch(
 		/runAgentTick[\s\S]*env:\s*processEnvForEnrollment\(\)/,
 	);

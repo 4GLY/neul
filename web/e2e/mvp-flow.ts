@@ -3,14 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
+import { buildEnrollmentShellInvocation } from "../src/enrollmentShell";
 import {
 	evidenceDir,
 	qaDir,
 	repoRoot,
 	type ServerFixture,
 } from "./server-fixture";
-
-export const enrollmentShellPath = "/bin/sh";
 
 export type EnrolledMachine = {
 	readonly machineId: string;
@@ -36,7 +35,8 @@ export async function visibleOnboardMachine(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
-	const output = execFileSync(enrollmentShellPath, ["-c", command], {
+	const invocation = buildEnrollmentShellInvocation(command);
+	const output = execFileSync(invocation.file, invocation.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvForEnrollment(),
