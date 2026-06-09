@@ -3,6 +3,13 @@ export type PortableShellInvocation = {
 	readonly file: "/bin/sh";
 };
 
+export class EnrollCommandError extends Error {
+	constructor() {
+		super("generated enroll command is missing --connect-once");
+		this.name = "EnrollCommandError";
+	}
+}
+
 export function buildPortableShellInvocation(
 	command: string,
 ): PortableShellInvocation {
@@ -16,10 +23,14 @@ export function buildEnrollCommand(
 	generated: string,
 	configDir: string,
 ): string {
-	return generated.replace(
+	const command = generated.replace(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
+	if (command === generated) {
+		throw new EnrollCommandError();
+	}
+	return command;
 }
 
 function shellQuote(value: string): string {

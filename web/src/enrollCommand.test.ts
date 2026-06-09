@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildEnrollCommand,
 	buildPortableShellInvocation,
+	EnrollCommandError,
 } from "./enrollCommand";
 
 describe("enroll command execution", () => {
@@ -26,5 +27,14 @@ describe("enroll command execution", () => {
 		expect(command).toBe(
 			"go run ./cmd/neul agent enroll --pair abc --config-dir '/tmp/neul config/owner'\\''s laptop' --connect-once",
 		);
+	});
+
+	it("fails before running a command that cannot receive the temp config dir", () => {
+		expect(() =>
+			buildEnrollCommand(
+				"go run ./cmd/neul agent enroll --pair abc",
+				"/tmp/neul config",
+			),
+		).toThrow(EnrollCommandError);
 	});
 });
