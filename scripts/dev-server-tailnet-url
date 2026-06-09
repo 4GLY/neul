@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+host=${1:-}
+port=${2:-}
+
+case "$host" in
+	127.0.0.1|localhost|192.168.*|10.*|172.16.*|172.17.*|172.18.*|172.19.*|172.2*|172.30.*|172.31.*)
+		exit 0
+		;;
+esac
+if [ "$host" != "0.0.0.0" ] && [ "$host" != "::" ]; then
+	exit 0
+fi
+if ! command -v tailscale >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+	exit 0
+fi
+
+json=$(tailscale status --json 2>/dev/null || true)
+if [ -z "$json" ]; then
+	exit 0
+fi
+
+name=$(printf '%s' "$json" | python3 -c 'import json,sys; data=json.load(sys.stdin); node=data.get("Self") or {}; ips=node.get("TailscaleIPs") or []; print((node.get("DNSName") or "").rstrip(".") or (ips[0] if ips else ""))' 2>/dev/null || true)
+if [ -n "$name" ]; then
+	printf 'http://%s:%s/\n' "$name" "$port"
+fi

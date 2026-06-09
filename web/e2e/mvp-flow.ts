@@ -39,7 +39,7 @@ export async function visibleOnboardMachine(
 	const output = execFileSync(invocation.file, invocation.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
-		env: processEnvWithoutGoroot(),
+		env: processEnvForEnrollment(),
 	});
 	writeFileSync(
 		join(evidenceDir, "task-6-agent-onboarding-e2e-log.txt"),
@@ -133,7 +133,7 @@ export async function runAgentTick(enrolled: EnrolledMachine): Promise<void> {
 		["run", "./cmd/neul-agent", "--once", "--config", enrolled.configPath],
 		{
 			cwd: repoRoot,
-			env: processEnvWithoutGoroot(),
+			env: processEnvForEnrollment(),
 			stdio: "pipe",
 		},
 	);
@@ -167,6 +167,25 @@ function processEnvWithoutGoroot(): NodeJS.ProcessEnv {
 	const next = { ...process.env };
 	delete next.GOROOT;
 	return next;
+}
+
+function processEnvForEnrollment(): NodeJS.ProcessEnv {
+	const next = processEnvWithoutGoroot();
+	next.PATH = withCommonGoPath(next.PATH);
+	return next;
+}
+
+export function withCommonGoPath(path: string | undefined): string {
+	return [
+		...(path ?? "").split(":"),
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/local/go/bin",
+	]
+		.filter((segment, index, segments) => {
+			return segment.length > 0 && segments.indexOf(segment) === index;
+		})
+		.join(":");
 }
 
 function shellQuote(value: string): string {
