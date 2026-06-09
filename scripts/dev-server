@@ -148,6 +148,13 @@ dashboard_url() {
 	esac
 }
 
+listen_addr() {
+	case "$HOST" in
+		*:*) printf '[%s]:%s\n' "$HOST" "$PORT" ;;
+		*) printf '%s:%s\n' "$HOST" "$PORT" ;;
+	esac
+}
+
 tailnet_url() {
 	/bin/sh "$SCRIPT_DIR/dev-server-tailnet-url" "$HOST" "$PORT"
 }
@@ -224,7 +231,7 @@ write_runner() {
 	{
 		printf '#!/bin/sh\n'
 		printf 'cd %s || exit 1\n' "$(shell_quote "$REPO_ROOT")"
-		printf 'export NEUL_ADDR=%s\n' "$(shell_quote "$HOST:$PORT")"
+		printf 'export NEUL_ADDR=%s\n' "$(shell_quote "$(listen_addr)")"
 		printf 'export NEUL_DB=%s\n' "$(shell_quote "$DB_FILE")"
 		printf 'export NEUL_HOME_DIR=%s\n' "$(shell_quote "$HOME_DIR")"
 		printf 'export NEUL_STATIC_DIR=%s\n' "$(shell_quote "$STATIC_DIR_ABS")"
