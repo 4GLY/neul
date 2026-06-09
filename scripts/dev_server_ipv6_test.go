@@ -44,6 +44,9 @@ func TestDevServerWrapper_exportsBracketedIPv6ListenAddr_whenHostContainsColon(t
 				t.Fatalf("ReadFile() error = %v", err)
 			}
 			assertContains(t, string(runner), tt.want)
+			if tt.host == "::1" {
+				assertContains(t, start.output, "Dashboard URL: http://[::1]:19096/")
+			}
 		})
 	}
 }
