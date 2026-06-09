@@ -42,7 +42,15 @@ function stubDashboardFetch(calls: string[]): void {
 			calls.push(`${init?.method ?? "GET"} ${path}`);
 			if (path === "/api/dashboard") {
 				return jsonResponse({
-					metrics: { total: 1, healthy: 0, drifted: 1, pending: 0 },
+					metrics: {
+						total: 1,
+						healthy: 0,
+						drifted: 1,
+						pending: 0,
+						offline: 0,
+						blocked: 0,
+						unknown: 0,
+					},
 					machines: [
 						{
 							id: "machine_1",

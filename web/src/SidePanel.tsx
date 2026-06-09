@@ -10,6 +10,7 @@ const statusLabels: Readonly<Record<MachineStatus, string>> = {
 	pending: "Pending",
 	offline: "Offline",
 	blocked: "Blocked",
+	unknown: "Unknown",
 };
 
 export function MachineInspector({

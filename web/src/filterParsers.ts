@@ -8,6 +8,7 @@ export function parseStatus(value: string): "all" | MachineStatus {
 		case "pending":
 		case "offline":
 		case "blocked":
+		case "unknown":
 			return value;
 		default:
 			return "all";

@@ -1,8 +1,9 @@
 import { Filter, MoreVertical, Search } from "lucide-react";
 import type { ReactElement } from "react";
+import type { DashboardMetrics } from "./api";
 import { copy } from "./copy";
 import { parseOs, parseStatus } from "./filterParsers";
-import type { Machine, MachineStatus, ResourceRow, SyncState } from "./types";
+import type { Machine, MachineStatus, ResourceRow } from "./types";
 
 const statusLabels: Readonly<Record<MachineStatus, string>> = {
 	healthy: "Healthy",
@@ -10,48 +11,44 @@ const statusLabels: Readonly<Record<MachineStatus, string>> = {
 	pending: "Pending",
 	offline: "Offline",
 	blocked: "Blocked",
-};
-
-const syncLabels: Readonly<Record<SyncState, string>> = {
-	applied: "Applied",
-	pending: "Pending",
-	drifted: "Drifted",
-	blocked: "Blocked",
-	rotating: "Rotating",
-	na: "N/A",
+	unknown: "Unknown",
 };
 
 export function MetricStrip({
-	healthyCount,
-	driftedCount,
-	pendingCount,
-	machineCount,
-	onlineCount,
+	metrics,
+	latestReconcile,
 }: {
-	readonly healthyCount: number;
-	readonly driftedCount: number;
-	readonly pendingCount: number;
-	readonly machineCount: number;
-	readonly onlineCount: number;
+	readonly metrics: DashboardMetrics;
+	readonly latestReconcile: string;
 }): ReactElement {
-	const metrics = [
+	const onlineCount =
+		metrics.healthy + metrics.drifted + metrics.pending + metrics.blocked;
+	const healthyRatio =
+		metrics.total === 0
+			? "0%"
+			: `${Math.round((metrics.healthy / metrics.total) * 100)}%`;
+	const metricCards = [
 		[
 			copy.dashboard.metrics.machines,
-			machineCount.toString(),
+			metrics.total.toString(),
 			`${onlineCount} online`,
 		],
-		[copy.dashboard.metrics.healthy, healthyCount.toString(), "80%"],
-		[copy.dashboard.metrics.drifted, driftedCount.toString(), "needs review"],
+		[copy.dashboard.metrics.healthy, metrics.healthy.toString(), healthyRatio],
+		[
+			copy.dashboard.metrics.drifted,
+			metrics.drifted.toString(),
+			attentionNote(metrics),
+		],
 		[
 			copy.dashboard.metrics.pendingChanges,
-			pendingCount.toString(),
-			"2 resources",
+			metrics.pending.toString(),
+			"awaiting apply",
 		],
-		[copy.dashboard.metrics.lastReconcile, "2m ago", "avg. across fleet"],
+		[copy.dashboard.metrics.lastReconcile, latestReconcile, "latest report"],
 	] as const;
 	return (
 		<section className="metric-strip">
-			{metrics.map(([label, value, note]) => (
+			{metricCards.map(([label, value, note]) => (
 				<div className="metric" key={label}>
 					<span>{label}</span>
 					<strong>{value}</strong>
@@ -60,6 +57,10 @@ export function MetricStrip({
 			))}
 		</section>
 	);
+}
+
+function attentionNote(metrics: DashboardMetrics): string {
+	return `${metrics.blocked} blocked · ${metrics.offline} offline · ${metrics.unknown} awaiting report`;
 }
 
 type MachineFiltersProps = {
@@ -94,6 +95,7 @@ export function MachineFilters({
 				<option value="pending">Pending</option>
 				<option value="offline">Offline</option>
 				<option value="blocked">Blocked</option>
+				<option value="unknown">Unknown</option>
 			</select>
 			<select
 				value={osFilter}
@@ -184,17 +186,15 @@ export function MachineTable({
 
 export function DesiredLivePreview({
 	resources,
-	selectedMachine,
 }: {
 	readonly resources: readonly ResourceRow[];
-	readonly selectedMachine: Machine;
 }): ReactElement {
 	return (
 		<section className="ledger">
 			<header>
 				<div>
-					<p className="eyebrow">Desired vs live</p>
-					<h2>base + darwin + work</h2>
+					<p className="eyebrow">Desired resources</p>
+					<h2>base desired state</h2>
 				</div>
 				<button className="secondary-button" type="button">
 					View history
@@ -203,9 +203,6 @@ export function DesiredLivePreview({
 			<div className="ledger-grid ledger-head">
 				<span>Resource</span>
 				<span>Desired</span>
-				<span>Selected machine</span>
-				<span>mac-studio</span>
-				<span>homelab-node</span>
 			</div>
 			{resources.map((resource) => (
 				<div
@@ -217,9 +214,6 @@ export function DesiredLivePreview({
 						<b>{resource.name}</b>
 					</span>
 					<span>{resource.desired}</span>
-					<SyncBadge state={resource.states[selectedMachine.id] ?? "na"} />
-					<SyncBadge state={resource.states["mac-studio"] ?? "na"} />
-					<SyncBadge state={resource.states["homelab-node"] ?? "na"} />
 				</div>
 			))}
 		</section>
@@ -239,8 +233,4 @@ function StatusCell({
 			<small>{note}</small>
 		</span>
 	);
-}
-
-function SyncBadge({ state }: { readonly state: SyncState }): ReactElement {
-	return <span className={`sync ${state}`}>{syncLabels[state]}</span>;
 }
