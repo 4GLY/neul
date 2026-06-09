@@ -8,20 +8,26 @@ export type ApiMachine = {
 	readonly agentVersion: string;
 	readonly status: MachineStatus;
 	readonly lastHeartbeatAt?: string;
+	readonly lastReconcileAt?: string;
 	readonly driftCount: number;
 	readonly pendingCount: number;
 	readonly blockedCount: number;
+	readonly resourceCount: number;
+	readonly appliedCount: number;
+};
+
+export type ApiDashboardMetrics = {
+	readonly total: number;
+	readonly healthy: number;
+	readonly drifted: number;
+	readonly pending: number;
+	readonly offline: number;
+	readonly blocked: number;
+	readonly unknown: number;
 };
 
 export type ApiDashboard = {
-	readonly metrics: {
-		readonly total: number;
-		readonly healthy: number;
-		readonly drifted: number;
-		readonly pending: number;
-		readonly offline?: number;
-		readonly blocked?: number;
-	};
+	readonly metrics: ApiDashboardMetrics;
 	readonly machines: readonly ApiMachine[];
 	readonly activity: readonly unknown[];
 	readonly ledger: readonly unknown[];

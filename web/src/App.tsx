@@ -1,8 +1,12 @@
 import type { ReactElement } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DashboardData, MachineEvent } from "./api";
 import { loadDashboardData, loadMachineEvents, repairDrift } from "./api";
 import { copy } from "./copy";
+import {
+	latestReconcileLabel,
+	selectDashboardMachineId,
+} from "./dashboardView";
 import {
 	DesiredLivePreview,
 	MachineFilters,
@@ -34,14 +38,15 @@ export function App(): ReactElement {
 	const [events, setEvents] = useState<readonly MachineEvent[]>([]);
 	const [activityNotice, setActivityNotice] = useState("");
 	const [onboardingOpen, setOnboardingOpen] = useState(false);
+	const eventRequestId = useRef(0);
 
 	const refreshDashboard = useCallback(async (): Promise<void> => {
-		setLoadState("loading");
+		setLoadState((current) => (current === "ready" ? "ready" : "loading"));
 		try {
 			const data = await loadDashboardData();
 			setDashboard(data);
-			setSelectedMachineId(
-				(current) => current || (data.machines[0]?.id ?? ""),
+			setSelectedMachineId((current) =>
+				selectDashboardMachineId(current, data.machines),
 			);
 			setLoadState("ready");
 		} catch {
@@ -60,6 +65,28 @@ export function App(): ReactElement {
 	const selectedMachine =
 		machines.find((machine) => machine.id === selectedMachineId) ??
 		fallbackMachine;
+	const eventMachineId = selectedMachine?.id ?? "";
+	const previousEventMachineId = useRef<string | null>(null);
+	const activeEventMachineId = useRef(eventMachineId);
+	const canRenderDashboard = dashboard !== null && loadState !== "loading";
+	const canRenderFleet = canRenderDashboard && machines.length > 0;
+	const canRenderDetails = canRenderDashboard && selectedMachine !== undefined;
+
+	useEffect(() => {
+		activeEventMachineId.current = eventMachineId;
+		if (previousEventMachineId.current === eventMachineId) {
+			return;
+		}
+		if (
+			shouldPreserveEventsOnMachineTransition(previousEventMachineId.current)
+		) {
+			previousEventMachineId.current = eventMachineId;
+			return;
+		}
+		previousEventMachineId.current = eventMachineId;
+		setEvents([]);
+	}, [eventMachineId]);
+
 	const visibleMachines = useMemo(
 		() =>
 			machines.filter((machine) => {
@@ -71,19 +98,6 @@ export function App(): ReactElement {
 		[machines, osFilter, statusFilter],
 	);
 
-	const healthyCount = machines.filter(
-		(machine) => machine.status === "healthy",
-	).length;
-	const driftedCount = machines.filter(
-		(machine) => machine.status === "drifted",
-	).length;
-	const pendingCount = machines.filter(
-		(machine) => machine.status === "pending",
-	).length;
-	const onlineCount = machines.filter(
-		(machine) => machine.status !== "offline",
-	).length;
-
 	function handleReconcile(): void {
 		setRunState("running");
 		window.setTimeout(() => setRunState("idle"), 1600);
@@ -93,17 +107,34 @@ export function App(): ReactElement {
 		if (selectedMachine === undefined) {
 			return;
 		}
-		await repairDrift(selectedMachine.id);
-		setActivityNotice("복구 명령을 대기열에 추가했습니다");
-		await refreshDashboard();
+		try {
+			await repairDrift(selectedMachine.id);
+			setActivityNotice("복구 명령을 대기열에 추가했습니다");
+			await refreshDashboard();
+		} catch {
+			setActivityNotice("복구 명령을 만들지 못했습니다");
+		}
 	}
 
 	async function handleOpenLogs(): Promise<void> {
 		if (selectedMachine === undefined) {
 			return;
 		}
-		const nextEvents = await loadMachineEvents(selectedMachine.id);
-		setEvents(nextEvents);
+		const machineID = selectedMachine.id;
+		const requestId = eventRequestId.current + 1;
+		eventRequestId.current = requestId;
+		try {
+			const nextEvents = await loadMachineEvents(machineID);
+			if (
+				eventRequestId.current !== requestId ||
+				activeEventMachineId.current !== machineID
+			) {
+				return;
+			}
+			setEvents(nextEvents);
+		} catch {
+			setActivityNotice("로그를 불러오지 못했습니다");
+		}
 	}
 
 	return (
@@ -155,13 +186,12 @@ export function App(): ReactElement {
 							<StatePanel title="작업 대기열" body={activityNotice} />
 						)}
 
-						<MetricStrip
-							healthyCount={healthyCount}
-							driftedCount={driftedCount}
-							pendingCount={pendingCount}
-							machineCount={machines.length}
-							onlineCount={onlineCount}
-						/>
+						{canRenderFleet && dashboard !== null ? (
+							<MetricStrip
+								metrics={dashboard.metrics}
+								latestReconcile={latestReconcileLabel(machines)}
+							/>
+						) : null}
 						{loadState === "loading" ? (
 							<StatePanel
 								title="불러오는 중"
@@ -172,6 +202,10 @@ export function App(): ReactElement {
 							<StatePanel
 								title="대시보드를 불러오지 못했습니다"
 								body="서버 연결을 확인한 뒤 다시 시도하세요."
+								action="다시 시도"
+								onAction={() => {
+									void refreshDashboard();
+								}}
 							/>
 						) : null}
 						{loadState === "ready" && machines.length === 0 ? (
@@ -198,15 +232,10 @@ export function App(): ReactElement {
 								}}
 							/>
 						) : null}
-						{loadState === "ready" &&
-						selectedMachine !== undefined &&
-						activeView === "ledger" ? (
-							<DesiredLivePreview
-								resources={resources}
-								selectedMachine={selectedMachine}
-							/>
+						{canRenderDetails && activeView === "ledger" ? (
+							<DesiredLivePreview resources={resources} />
 						) : null}
-						{loadState === "ready" && machines.length > 0 ? (
+						{canRenderFleet ? (
 							<MachineFilters
 								statusFilter={statusFilter}
 								osFilter={osFilter}
@@ -214,20 +243,15 @@ export function App(): ReactElement {
 								onOsChange={setOsFilter}
 							/>
 						) : null}
-						{loadState === "ready" && machines.length > 0 ? (
+						{canRenderFleet ? (
 							<MachineTable
 								machines={visibleMachines}
 								selectedMachineId={selectedMachineId}
 								onSelect={setSelectedMachineId}
 							/>
 						) : null}
-						{loadState === "ready" &&
-						selectedMachine !== undefined &&
-						activeView === "dashboard" ? (
-							<DesiredLivePreview
-								resources={resources}
-								selectedMachine={selectedMachine}
-							/>
+						{canRenderDetails && activeView === "dashboard" ? (
+							<DesiredLivePreview resources={resources} />
 						) : null}
 					</section>
 					<aside className="side-panel">
@@ -254,4 +278,10 @@ export function App(): ReactElement {
 			</section>
 		</main>
 	);
+}
+
+function shouldPreserveEventsOnMachineTransition(
+	previous: string | null,
+): boolean {
+	return previous === null || previous === "";
 }

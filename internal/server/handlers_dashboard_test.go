@@ -3,8 +3,10 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +102,10 @@ func TestRepairDrift_requiresOwnerCookieAndIsIdempotent(t *testing.T) {
 	router, cookie := authenticatedRouter(t, db, now)
 	seedMachine(t, db, "machine_repair", "repair", now.Add(-time.Minute))
 	seedResource(t, db, "resource_pkg", "package", "brew:git", 1)
+	seedResource(t, db, "resource_current", "package", "brew:rg", 1)
 	seedReconcileEvent(t, db, "machine_repair", "resource_pkg", "drifted", 1, 0)
+	seedReconcileEventAt(t, db, "machine_repair", "resource_pkg", "in_sync", 1, 1, now.Add(-time.Minute))
+	seedReconcileEventAt(t, db, "machine_repair", "resource_current", "drifted", 1, 0, now.Add(-time.Minute))
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/machines/machine_repair/repair-drift", http.NoBody)
 	unauthorized.Header.Set("Idempotency-Key", "repair-test-1")
@@ -138,6 +143,49 @@ func TestRepairDrift_requiresOwnerCookieAndIsIdempotent(t *testing.T) {
 	if commandCount != 1 {
 		t.Fatalf("command count = %d, want 1", commandCount)
 	}
+	var payloadJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT payload_json FROM agent_commands WHERE machine_id = ? AND command_type = 'repair_drift'`, "machine_repair").Scan(&payloadJSON); err != nil {
+		t.Fatalf("query command payload error = %v", err)
+	}
+	var payload struct {
+		ResourceIDs []string `json:"resourceIds"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("payload JSON error = %v", err)
+	}
+	if !slices.Equal(payload.ResourceIDs, []string{"resource_current"}) {
+		t.Fatalf("payload resourceIds = %v, want latest drift only", payload.ResourceIDs)
+	}
+}
+
+func TestRepairDrift_whenNoResourcesDrifted_queuesEmptyResourceIDs(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	seedMachine(t, db, "machine_clean", "clean", now.Add(-time.Minute))
+
+	request := httptest.NewRequest(http.MethodPost, "/api/machines/machine_clean/repair-drift", http.NoBody)
+	request.AddCookie(cookie)
+	request.Header.Set("Idempotency-Key", "repair-clean-1")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	var payloadJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT payload_json FROM agent_commands WHERE machine_id = ? AND command_type = 'repair_drift'`, "machine_clean").Scan(&payloadJSON); err != nil {
+		t.Fatalf("query command payload error = %v", err)
+	}
+	var payload struct {
+		ResourceIDs []string `json:"resourceIds"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("payload JSON error = %v", err)
+	}
+	if payload.ResourceIDs == nil || len(payload.ResourceIDs) != 0 {
+		t.Fatalf("payload resourceIds = %#v, want empty array", payload.ResourceIDs)
+	}
 }
 
 func seedMachine(t *testing.T, db *sql.DB, id string, name string, lastHeartbeat time.Time) {
@@ -174,15 +222,20 @@ func seedResource(t *testing.T, db *sql.DB, id string, kind string, name string,
 
 func seedReconcileEvent(t *testing.T, db *sql.DB, machineID string, resourceID string, status string, desiredVersion int, appliedVersion int) {
 	t.Helper()
-	runID := "run_" + machineID + "_" + resourceID
-	createdAt := time.Date(2026, 6, 5, 12, 30, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	seedReconcileEventAt(t, db, machineID, resourceID, status, desiredVersion, appliedVersion, time.Date(2026, 6, 5, 12, 30, 0, 0, time.UTC))
+}
+
+func seedReconcileEventAt(t *testing.T, db *sql.DB, machineID string, resourceID string, status string, desiredVersion int, appliedVersion int, createdAt time.Time) {
+	t.Helper()
+	runID := "run_" + machineID + "_" + resourceID + "_" + status + "_" + createdAt.Format("150405")
+	createdAtText := createdAt.Format(time.RFC3339Nano)
 	_, err := db.ExecContext(
 		context.Background(),
 		`INSERT INTO reconcile_runs (id, machine_id, reason, idempotency_key, status, created_at) VALUES (?, ?, 'test', ?, 'finished', ?)`,
 		runID,
 		machineID,
 		runID,
-		createdAt,
+		createdAtText,
 	)
 	if err != nil {
 		t.Fatalf("insert run error = %v", err)
@@ -190,13 +243,13 @@ func seedReconcileEvent(t *testing.T, db *sql.DB, machineID string, resourceID s
 	_, err = db.ExecContext(
 		context.Background(),
 		`INSERT INTO reconcile_events (id, run_id, resource_id, status, message, desired_version, applied_version, created_at) VALUES (?, ?, ?, ?, 'seed event', ?, ?, ?)`,
-		"event_"+machineID+"_"+resourceID,
+		"event_"+runID,
 		runID,
 		resourceID,
 		status,
 		desiredVersion,
 		appliedVersion,
-		createdAt,
+		createdAtText,
 	)
 	if err != nil {
 		t.Fatalf("insert event error = %v", err)

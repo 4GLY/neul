@@ -485,6 +485,9 @@ select {
 .status.offline::before {
 	background: #df2c2c;
 }
+.status.unknown::before {
+	background: #667085;
+}
 .warning-text {
 	color: #d97900;
 }
@@ -505,7 +508,7 @@ select {
 }
 .ledger-grid {
 	display: grid;
-	grid-template-columns: 1.25fr 0.8fr 0.9fr 0.9fr 0.9fr;
+	grid-template-columns: 1.25fr 0.8fr;
 	align-items: center;
 	gap: 12px;
 	padding: 10px 16px;

@@ -1,5 +1,6 @@
 import type {
 	ApiDashboard,
+	ApiDashboardMetrics,
 	ApiMachineDetail,
 	ApiMachineEvent,
 	ApiPairInitResponse,
@@ -7,13 +8,24 @@ import type {
 	ApiResource,
 	ApiResources,
 } from "./apiTypes";
-import type { Activity, Machine, ResourceRow, SyncState } from "./types";
+import type { Activity, Machine, ResourceRow } from "./types";
 
 export type DashboardData = {
+	readonly metrics: DashboardMetrics;
 	readonly machines: readonly Machine[];
 	readonly resources: readonly ResourceRow[];
 	readonly activities: readonly Activity[];
 	readonly emptyStateAction?: string;
+};
+
+export type DashboardMetrics = {
+	readonly total: number;
+	readonly healthy: number;
+	readonly drifted: number;
+	readonly pending: number;
+	readonly offline: number;
+	readonly blocked: number;
+	readonly unknown: number;
 };
 
 export type MachineEvent = ApiMachineEvent;
@@ -39,8 +51,10 @@ export async function loadDashboardData(): Promise<DashboardData> {
 		fetchJSON<ApiDashboard>("/api/dashboard"),
 		fetchJSON<ApiResources>("/api/resources"),
 	]);
+	const machines = dashboard.machines.map(mapMachine);
 	const data: DashboardData = {
-		machines: dashboard.machines.map(mapMachine),
+		metrics: mapMetrics(dashboard.metrics, machines.length),
+		machines,
 		resources: resources.resources.map(mapResource),
 		activities: mapActivities(dashboard),
 	};
@@ -117,9 +131,26 @@ async function postResource<T extends object>(
 	return (await response.json()) as ApiResource;
 }
 
+function mapMetrics(
+	metrics: ApiDashboardMetrics,
+	machineCount: number,
+): DashboardMetrics {
+	return {
+		total: machineCount,
+		healthy: metrics.healthy,
+		drifted: metrics.drifted,
+		pending: metrics.pending,
+		offline: metrics.offline,
+		blocked: metrics.blocked,
+		unknown: metrics.unknown,
+	};
+}
+
 function mapMachine(machine: ApiDashboard["machines"][number]): Machine {
-	const driftCount = machine.driftCount + machine.blockedCount;
+	const driftCount = machine.driftCount;
 	const pendingCount = machine.pendingCount;
+	const resourceCount = machine.resourceCount;
+	const appliedCount = machine.appliedCount;
 	return {
 		id: machine.id,
 		name: machine.name,
@@ -131,9 +162,16 @@ function mapMachine(machine: ApiDashboard["machines"][number]): Machine {
 		status: machine.status,
 		desiredState: desiredStateLabel(machine.status),
 		driftCount,
-		lastReconcile: "최근 report",
-		lastSeen: machine.lastHeartbeatAt === undefined ? "unknown" : "just now",
-		progress: `${Math.max(0, 1 - pendingCount)} / 1`,
+		pendingCount,
+		blockedCount: machine.blockedCount,
+		resourceCount,
+		appliedCount,
+		lastReconcile: formatTimestamp(machine.lastReconcileAt),
+		...(machine.lastReconcileAt === undefined
+			? {}
+			: { lastReconcileAt: machine.lastReconcileAt }),
+		lastSeen: lastSeenLabel(machine.lastHeartbeatAt),
+		progress: `${appliedCount} / ${resourceCount}`,
 		note: noteFor(machine.status, driftCount, pendingCount),
 	};
 }
@@ -148,7 +186,6 @@ function mapResource(resource: ApiResource): ResourceRow {
 		group,
 		name: resource.name,
 		desired,
-		states: {},
 	};
 }
 
@@ -172,6 +209,25 @@ function desiredStateLabel(status: Machine["status"]): string {
 	return "Unknown";
 }
 
+function formatTimestamp(value: string | undefined): string {
+	if (value === undefined) {
+		return "아직 없음";
+	}
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) {
+		return "아직 없음";
+	}
+	const iso = date.toISOString();
+	return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
+}
+
+function lastSeenLabel(value: string | undefined): string {
+	if (value === undefined) {
+		return "unknown";
+	}
+	return formatTimestamp(value);
+}
+
 function noteFor(
 	status: Machine["status"],
 	driftCount: number,
@@ -189,21 +245,8 @@ function noteFor(
 	if (status === "offline") {
 		return "Agent reconnecting";
 	}
+	if (status === "unknown") {
+		return "Awaiting first report";
+	}
 	return "All good";
-}
-
-export function syncStateFromStatus(status: Machine["status"]): SyncState {
-	if (status === "healthy") {
-		return "applied";
-	}
-	if (status === "blocked") {
-		return "blocked";
-	}
-	if (status === "drifted") {
-		return "drifted";
-	}
-	if (status === "pending") {
-		return "pending";
-	}
-	return "na";
 }

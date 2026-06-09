@@ -5,15 +5,9 @@ export type MachineStatus =
 	| "drifted"
 	| "pending"
 	| "offline"
-	| "blocked";
-export type OsKind = "macOS" | "Linux";
-export type SyncState =
-	| "applied"
-	| "pending"
-	| "drifted"
 	| "blocked"
-	| "rotating"
-	| "na";
+	| "unknown";
+export type OsKind = "macOS" | "Linux";
 
 export type Machine = {
 	readonly id: string;
@@ -26,7 +20,12 @@ export type Machine = {
 	readonly status: MachineStatus;
 	readonly desiredState: string;
 	readonly driftCount: number;
+	readonly pendingCount: number;
+	readonly blockedCount: number;
+	readonly resourceCount: number;
+	readonly appliedCount: number;
 	readonly lastReconcile: string;
+	readonly lastReconcileAt?: string;
 	readonly lastSeen: string;
 	readonly progress: string;
 	readonly note: string;
@@ -45,7 +44,6 @@ export type ResourceRow = {
 	readonly group: "패키지" | "dotfile" | "secret";
 	readonly name: string;
 	readonly desired: string;
-	readonly states: Readonly<Record<string, SyncState>>;
 };
 
 export type NavItem = {
