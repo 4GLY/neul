@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
-import { buildPortableShellInvocation } from "../src/portableShell";
+import { buildEnrollmentShellInvocation } from "../src/enrollmentShell";
 import {
 	evidenceDir,
 	qaDir,
@@ -35,8 +35,8 @@ export async function visibleOnboardMachine(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
-	const shell = buildPortableShellInvocation(command);
-	const output = execFileSync(shell.executable, shell.args, {
+	const invocation = buildEnrollmentShellInvocation(command);
+	const output = execFileSync(invocation.file, invocation.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvWithoutGoroot(),

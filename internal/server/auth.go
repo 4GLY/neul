@@ -15,6 +15,7 @@ import (
 )
 
 const sessionCookieName = "neul_session"
+const setupTokenOutputPrefix = "neul setup token: "
 
 type BootstrapResult struct {
 	OwnerID    string
@@ -50,10 +51,14 @@ func BootstrapOwner(ctx context.Context, db *sql.DB, out io.Writer) (BootstrapRe
 	if err := createDefaultProfile(ctx, db, ownerID); err != nil {
 		return BootstrapResult{}, err
 	}
-	if _, err := fmt.Fprintf(out, "neul setup token: %s\n", token); err != nil {
+	if _, err := fmt.Fprint(out, formatSetupTokenOutput(token)); err != nil {
 		return BootstrapResult{}, fmt.Errorf("print setup token: %w", err)
 	}
 	return BootstrapResult{OwnerID: ownerID, SetupToken: token}, nil
+}
+
+func formatSetupTokenOutput(token string) string {
+	return setupTokenOutputPrefix + token + "\n"
 }
 
 func createDefaultProfile(ctx context.Context, db *sql.DB, ownerID string) error {

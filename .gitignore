@@ -29,6 +29,7 @@ web/design-qa.md
 web/design-qa-screenshot.png
 
 # ── 런타임 데이터 (self-hosted dev) ─────────────────────────
+.demo/
 /data/
 *.db
 *.db-journal

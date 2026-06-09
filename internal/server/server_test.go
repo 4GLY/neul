@@ -25,8 +25,9 @@ func TestBootstrap_whenDatabaseIsEmpty_printsSetupTokenOnceAndStoresOnlyHash(t *
 	if result.SetupToken == "" {
 		t.Fatal("SetupToken is empty")
 	}
-	if !strings.Contains(first.String(), result.SetupToken) {
-		t.Fatalf("stdout does not contain setup token")
+	wantSetupTokenLine := formatSetupTokenOutput(result.SetupToken)
+	if !strings.Contains(first.String(), wantSetupTokenLine) {
+		t.Fatalf("stdout = %q, want setup token line %q", first.String(), wantSetupTokenLine)
 	}
 
 	var storedHash string
