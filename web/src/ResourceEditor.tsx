@@ -1,12 +1,20 @@
 import type { FormEvent, ReactElement } from "react";
 import { useState } from "react";
-import { createDotfileResource, createPackageResource } from "./api";
+import {
+	createDotfileResource,
+	createPackageResource,
+	OwnerSessionRequiredError,
+} from "./api";
 
 type ResourceEditorProps = {
+	readonly onOwnerSessionRequired?: () => void;
 	readonly onSaved: () => void;
 };
 
-export function ResourceEditor({ onSaved }: ResourceEditorProps): ReactElement {
+export function ResourceEditor({
+	onOwnerSessionRequired,
+	onSaved,
+}: ResourceEditorProps): ReactElement {
 	const [mode, setMode] = useState<"package" | "dotfile">("package");
 	const [packageName, setPackageName] = useState("");
 	const [sourceKind, setSourceKind] = useState<"brew" | "apt" | "mise">("brew");
@@ -30,6 +38,10 @@ export function ResourceEditor({ onSaved }: ResourceEditorProps): ReactElement {
 			setMessage("저장했습니다");
 			onSaved();
 		} catch (error) {
+			if (error instanceof OwnerSessionRequiredError) {
+				onOwnerSessionRequired?.();
+				return;
+			}
 			setMessage(
 				error instanceof Error ? error.message : "저장하지 못했습니다",
 			);
@@ -53,6 +65,10 @@ export function ResourceEditor({ onSaved }: ResourceEditorProps): ReactElement {
 			setMessage("저장했습니다");
 			onSaved();
 		} catch (error) {
+			if (error instanceof OwnerSessionRequiredError) {
+				onOwnerSessionRequired?.();
+				return;
+			}
 			setMessage(
 				error instanceof Error ? error.message : "저장하지 못했습니다",
 			);

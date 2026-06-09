@@ -7,6 +7,17 @@ import type {
 	ApiResource,
 	ApiResources,
 } from "./apiTypes";
+import {
+	errorCodeFromResponse,
+	OwnerSessionRequiredError,
+} from "./localSession";
+
+export {
+	createLocalSession,
+	LocalSessionError,
+	OwnerSessionRequiredError,
+} from "./localSession";
+
 import type { Activity, Machine, ResourceRow, SyncState } from "./types";
 
 export type DashboardData = {
@@ -21,6 +32,9 @@ export type MachineEvent = ApiMachineEvent;
 export async function createPairingInvite(): Promise<ApiPairInitResponse> {
 	const response = await fetch("/api/pair/init", { method: "POST" });
 	if (!response.ok) {
+		if (await isOwnerSessionRequiredResponse(response)) {
+			throw new OwnerSessionRequiredError();
+		}
 		throw new Error("페어링 초대를 만들지 못했습니다");
 	}
 	return (await response.json()) as ApiPairInitResponse;
@@ -75,6 +89,9 @@ export async function repairDrift(machineId: string): Promise<void> {
 		headers: { "Idempotency-Key": `web-repair-${machineId}-${Date.now()}` },
 	});
 	if (!response.ok) {
+		if (await isOwnerSessionRequiredResponse(response)) {
+			throw new OwnerSessionRequiredError();
+		}
 		throw new Error("drift 복구 명령을 만들지 못했습니다");
 	}
 }
@@ -91,6 +108,9 @@ export async function loadMachineEvents(
 async function fetchJSON<T>(path: string): Promise<T> {
 	const response = await fetch(path);
 	if (!response.ok) {
+		if (await isOwnerSessionRequiredResponse(response)) {
+			throw new OwnerSessionRequiredError();
+		}
 		throw new Error("대시보드를 불러오지 못했습니다");
 	}
 	return (await response.json()) as T;
@@ -106,15 +126,29 @@ async function postResource<T extends object>(
 		body: JSON.stringify(body),
 	});
 	if (!response.ok) {
-		const error = (await response.json().catch(() => null)) as {
-			readonly error?: { readonly code?: string };
-		} | null;
-		if (error?.error?.code === "path_not_allowed") {
+		const code = await errorCodeFromResponse(response);
+		if (
+			response.status === 401 &&
+			(code === "unauthorized" || code === "owner_session_required")
+		) {
+			throw new OwnerSessionRequiredError();
+		}
+		if (code === "path_not_allowed") {
 			throw new Error("경로를 사용할 수 없습니다");
 		}
 		throw new Error("리소스를 저장하지 못했습니다");
 	}
 	return (await response.json()) as ApiResource;
+}
+
+async function isOwnerSessionRequiredResponse(
+	response: Response,
+): Promise<boolean> {
+	if (response.status !== 401) {
+		return false;
+	}
+	const code = await errorCodeFromResponse(response);
+	return code === "unauthorized" || code === "owner_session_required";
 }
 
 function mapMachine(machine: ApiDashboard["machines"][number]): Machine {

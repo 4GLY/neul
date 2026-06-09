@@ -10,6 +10,7 @@ import {
 	statSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,14 @@ export type ServerFixture = {
 	readonly process: ChildProcessWithoutNullStreams;
 };
 
-export async function startServer(label: string): Promise<ServerFixture> {
+export type StartServerOptions = {
+	readonly setupTokenTTL?: string;
+};
+
+export async function startServer(
+	label: string,
+	options: StartServerOptions = {},
+): Promise<ServerFixture> {
 	mkdirSync(evidenceDir, { recursive: true });
 	mkdirSync(qaDir, { recursive: true });
 	execFileSync("pnpm", ["build"], { cwd: webRoot, stdio: "pipe" });
@@ -43,7 +51,7 @@ export async function startServer(label: string): Promise<ServerFixture> {
 		env: processEnvWithoutGoroot(),
 		stdio: "pipe",
 	});
-	const port = label === "empty" ? 18081 : 18082;
+	const port = await availablePort();
 	const process = spawn(serverPath, [], {
 		cwd: repoRoot,
 		env: {
@@ -51,6 +59,9 @@ export async function startServer(label: string): Promise<ServerFixture> {
 			NEUL_ADDR: `127.0.0.1:${port}`,
 			NEUL_DB: dbPath,
 			NEUL_HOME_DIR: homeDir,
+			...(options.setupTokenTTL === undefined
+				? {}
+				: { NEUL_SETUP_TOKEN_TTL: options.setupTokenTTL }),
 			NEUL_STATIC_DIR: join(webRoot, "dist"),
 		},
 	});
@@ -155,4 +166,21 @@ function exists(path: string): boolean {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function availablePort(): Promise<number> {
+	return new Promise((resolvePort, rejectPort) => {
+		const server = createServer();
+		server.once("error", rejectPort);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (typeof address !== "object" || address === null) {
+				server.close();
+				rejectPort(new Error("dynamic port was not assigned"));
+				return;
+			}
+			const port = address.port;
+			server.close(() => resolvePort(port));
+		});
+	});
 }

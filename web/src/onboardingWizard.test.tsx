@@ -23,6 +23,7 @@ describe("OnboardingWizard", () => {
 		expect(document.body.textContent).toContain(
 			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
 		);
+		expect(document.body.textContent).not.toContain("setup_");
 	});
 
 	it("moves to heartbeat waiting when the pair poll is claimed", async () => {
@@ -87,12 +88,37 @@ describe("OnboardingWizard", () => {
 
 		expect(document.body.textContent).toContain("agent 응답 없음");
 	});
+
+	it("notifies the shell when invite creation loses owner session", async () => {
+		const ownerSessionRequired = vi.fn();
+		vi.stubGlobal(
+			"fetch",
+			async () =>
+				new Response(
+					JSON.stringify({
+						error: { code: "unauthorized", message: "Owner session required" },
+					}),
+					{ status: 401, headers: { "Content-Type": "application/json" } },
+				),
+		);
+
+		await renderWizard({ onOwnerSessionRequired: ownerSessionRequired });
+
+		expect(ownerSessionRequired).toHaveBeenCalledTimes(1);
+		expect(document.body.textContent).not.toContain("등록 오류");
+	});
 });
 
-async function renderWizard(): Promise<void> {
+async function renderWizard({
+	onOwnerSessionRequired,
+}: {
+	readonly onOwnerSessionRequired?: () => void;
+} = {}): Promise<void> {
 	const rootElement = document.createElement("div");
 	document.body.appendChild(rootElement);
 	const root = createRoot(rootElement);
+	const ownerSessionProps =
+		onOwnerSessionRequired === undefined ? {} : { onOwnerSessionRequired };
 	await act(async () => {
 		root.render(
 			<OnboardingWizard
@@ -102,6 +128,7 @@ async function renderWizard(): Promise<void> {
 				onConnected={() => {
 					return;
 				}}
+				{...ownerSessionProps}
 			/>,
 		);
 	});
