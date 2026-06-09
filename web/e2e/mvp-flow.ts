@@ -10,6 +10,8 @@ import {
 	type ServerFixture,
 } from "./server-fixture";
 
+export const enrollmentShellPath = "/bin/sh";
+
 export type EnrolledMachine = {
 	readonly machineId: string;
 	readonly machineToken: string;
@@ -34,7 +36,7 @@ export async function visibleOnboardMachine(
 		" --connect-once",
 		` --config-dir ${shellQuote(configDir)} --connect-once`,
 	);
-	const output = execFileSync("/bin/sh", ["-c", command], {
+	const output = execFileSync(enrollmentShellPath, ["-c", command], {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvForEnrollment(),
@@ -131,7 +133,7 @@ export async function runAgentTick(enrolled: EnrolledMachine): Promise<void> {
 		["run", "./cmd/neul-agent", "--once", "--config", enrolled.configPath],
 		{
 			cwd: repoRoot,
-			env: processEnvWithoutGoroot(),
+			env: processEnvForEnrollment(),
 			stdio: "pipe",
 		},
 	);

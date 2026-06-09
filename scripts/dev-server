@@ -91,6 +91,15 @@ require_value() {
 	esac
 }
 
+validate_host() {
+	case "$HOST" in
+		*'['*|*']'*)
+			printf 'host must be unbracketed: %s\n' "$HOST" >&2
+			exit 2
+			;;
+	esac
+}
+
 state_paths() {
 	STATE_DIR_ABS=$(abs_path "$STATE_DIR")
 	LOG_FILE="$STATE_DIR_ABS/server.log"
@@ -321,6 +330,7 @@ stop_server() {
 }
 
 parse_args "$@"
+validate_host
 state_paths
 
 case "$COMMAND" in
