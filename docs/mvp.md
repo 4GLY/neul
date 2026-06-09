@@ -151,6 +151,9 @@ MVP에서 제외하는 것:
 - package/dotfile/drift loop가 먼저 작동해야 secret 적용 결과도 의미가 있다.
 - MVP에서 secret을 억지로 구현하면 server compromise 방지 설계를 덜 검증한 채 제품에 넣게 된다.
 
+Post-MVP secret 설계는 [`docs/secrets-threat-model.md`](secrets-threat-model.md)
+에서 별도로 threat model을 accepted 상태로 만든 뒤 시작한다.
+
 ## 3. 화면 명세
 
 모든 사용자-facing copy는 Korean-first로 작성한다. CLI 명령, package name, file path, protocol field, API path는 영어 원문을 유지한다.
