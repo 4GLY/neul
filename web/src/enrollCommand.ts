@@ -1,22 +1,8 @@
-export type PortableShellInvocation = {
-	readonly args: readonly ["-c", string];
-	readonly file: "/bin/sh";
-};
-
 export class EnrollCommandError extends Error {
 	constructor() {
 		super("generated enroll command is missing --connect-once");
 		this.name = "EnrollCommandError";
 	}
-}
-
-export function buildPortableShellInvocation(
-	command: string,
-): PortableShellInvocation {
-	return {
-		args: ["-c", command],
-		file: "/bin/sh",
-	};
 }
 
 export function buildEnrollCommand(

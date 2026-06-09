@@ -3,10 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
-import {
-	buildEnrollCommand,
-	buildPortableShellInvocation,
-} from "../src/enrollCommand";
+import { buildEnrollCommand } from "../src/enrollCommand";
+import { buildEnrollmentShellInvocation } from "../src/enrollmentShell";
 import {
 	evidenceDir,
 	qaDir,
@@ -35,8 +33,8 @@ export async function visibleOnboardMachine(
 	const configDir = join(fixture.tempDir, "agent-config");
 	mkdirSync(configDir, { recursive: true });
 	const command = buildEnrollCommand(generated, configDir);
-	const shell = buildPortableShellInvocation(command);
-	const output = execFileSync(shell.file, shell.args, {
+	const invocation = buildEnrollmentShellInvocation(command);
+	const output = execFileSync(invocation.file, invocation.args, {
 		cwd: repoRoot,
 		encoding: "utf8",
 		env: processEnvWithoutGoroot(),

@@ -19,8 +19,9 @@ func TestBootstrap_whenDatabaseIsEmpty_printsSetupTokenOnceAndStoresOnlyHash(t *
 	if result.SetupToken == "" {
 		t.Fatal("SetupToken is empty")
 	}
-	if !strings.Contains(first.String(), result.SetupToken) {
-		t.Fatalf("stdout does not contain setup token")
+	wantSetupTokenLine := formatSetupTokenOutput(result.SetupToken)
+	if !strings.Contains(first.String(), wantSetupTokenLine) {
+		t.Fatalf("stdout = %q, want setup token line %q", first.String(), wantSetupTokenLine)
 	}
 
 	var storedHash string
@@ -75,8 +76,9 @@ func TestBootstrap_whenExistingSetupTokenIsExpired_rotatesAndPrintsReplacement(t
 	if secondResult.SetupToken == firstResult.SetupToken {
 		t.Fatal("replacement SetupToken reused the expired token")
 	}
-	if !strings.Contains(second.String(), secondResult.SetupToken) {
-		t.Fatalf("stdout does not contain replacement setup token")
+	wantSetupTokenLine := formatSetupTokenOutput(secondResult.SetupToken)
+	if !strings.Contains(second.String(), wantSetupTokenLine) {
+		t.Fatalf("stdout = %q, want replacement setup token line %q", second.String(), wantSetupTokenLine)
 	}
 }
 
@@ -103,7 +105,8 @@ func TestBootstrapWithClock_whenConfiguredSetupTokenTTLExpires_rotatesAndPrintsR
 	if secondResult.SetupToken == firstResult.SetupToken {
 		t.Fatal("replacement SetupToken reused the expired token")
 	}
-	if !strings.Contains(second.String(), secondResult.SetupToken) {
-		t.Fatalf("stdout does not contain replacement setup token")
+	wantSetupTokenLine := formatSetupTokenOutput(secondResult.SetupToken)
+	if !strings.Contains(second.String(), wantSetupTokenLine) {
+		t.Fatalf("stdout = %q, want replacement setup token line %q", second.String(), wantSetupTokenLine)
 	}
 }
