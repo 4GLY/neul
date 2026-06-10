@@ -10,7 +10,7 @@ describe("OnboardingWizard", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("creates an invite and renders the checkout-scoped enroll command", async () => {
+	it("creates an invite and renders the packaged-client enroll command", async () => {
 		const calls = stubFetchSequence([
 			{ code: "pair_123", expiresAt: "2026-06-06T12:10:00Z" },
 		]);
@@ -19,10 +19,21 @@ describe("OnboardingWizard", () => {
 
 		expect(calls[0]).toEqual({ url: "/api/pair/init", method: "POST" });
 		expect(document.body.textContent).toContain("명령 실행 대기 중");
-		expect(document.body.textContent).toContain("Run from your neul checkout:");
 		expect(document.body.textContent).toContain(
-			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
+			"macOS: Homebrew tap 또는 signed .pkg",
 		);
+		expect(document.body.textContent).toContain(
+			"Linux: Debian/Ubuntu .deb 또는 tarball",
+		);
+		expect(document.body.textContent).toContain(
+			"Run with packaged neul client:",
+		);
+		expect(document.body.textContent).toContain(
+			"neul enroll --server http://localhost:3000",
+		);
+		expect(document.body.textContent).not.toContain("pair_123");
+		expect(document.body.textContent).not.toContain("--pair");
+		expect(document.body.textContent).not.toContain("go run ./cmd/neul");
 		expect(document.body.textContent).not.toContain("setup_");
 	});
 

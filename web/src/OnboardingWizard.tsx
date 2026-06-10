@@ -148,7 +148,7 @@ export function OnboardingWizard({
 		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
 			return "";
 		}
-		return `go run ./cmd/neul agent enroll --server ${window.location.origin} --pair ${state.invite.code} --connect-once`;
+		return `neul enroll --server ${window.location.origin}`;
 	}, [state]);
 
 	if (state.kind === "creating") {
@@ -164,6 +164,11 @@ export function OnboardingWizard({
 		return (
 			<section className="state-panel" aria-label={copy.onboarding.title}>
 				<h2>{copy.onboarding.commandReady}</h2>
+				<ul>
+					{copy.onboarding.installOptions.map((option) => (
+						<li key={option}>{option}</li>
+					))}
+				</ul>
 				<p>{copy.onboarding.checkoutHint}</p>
 				<code>{command}</code>
 				<div className="actions">

@@ -28,6 +28,7 @@ demo-status:
 
 verify-docs:
 	@sh scripts/validate-demo-docs.sh
+	@sh scripts/validate-packaged-client-docs.sh
 
 verify-demo:
 	@sh scripts/verify-demo-pid-safety.sh

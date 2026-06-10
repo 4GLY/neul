@@ -26,6 +26,21 @@ require_pattern() {
 	fi
 }
 
+require_order() {
+	file=$1
+	first=$2
+	second=$3
+	label=$4
+	if ! awk -v first="$first" -v second="$second" '
+		index($0, first) && first_line == 0 { first_line = NR }
+		index($0, second) && second_line == 0 { second_line = NR }
+		END { exit first_line > 0 && second_line > first_line ? 0 : 1 }
+	' "$file"; then
+		printf 'FAIL %s: %s must appear before %s in %s\n' "$label" "$first" "$second" "$file"
+		failures=$((failures + 1))
+	fi
+}
+
 require_file "README.md"
 require_file "Makefile"
 require_file "scripts/demo.sh"
@@ -42,7 +57,9 @@ require_pattern "README.md" '재사용' "README documents cached demo artifacts"
 require_pattern "README.md" 'PORT="\$\{PORT:-8080\}"' "README configurable token-exchange port"
 require_pattern "README.md" '^neul setup token: <token>$' "README setup token log contract"
 require_pattern "README.md" '/api/session/local' "README setup-token session endpoint"
-require_pattern "README.md" '^go run \./cmd/neul agent enroll --server http://127\.0\.0\.1:<PORT> --pair pair_\.\.\. --connect-once$' "README UI first machine enrollment"
+require_pattern "README.md" '^### fallback/debug: checkout-local enrollment$' "README fallback enrollment section"
+require_order "README.md" '### fallback/debug: checkout-local enrollment' 'go run ./cmd/neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... --connect-once' "README checkout-local enrollment is fallback-only"
+require_pattern "README.md" '^go run \./cmd/neul agent enroll --server http://127\.0\.0\.1:<PORT> --pair pair_\.\.\. --connect-once$' "README fallback checkout-local enrollment"
 require_pattern "README.md" '^go run \./cmd/neul agent enroll --server http://127\.0\.0\.1:<PORT> --pair pair_\.\.\. --config-dir \.demo/agent-config --connect-once$' "README repeatable local enrollment"
 require_pattern "README.md" '^### http, https, Tailscale 접근$' "README http/https section"
 require_pattern "README.md" 'http://127\.0\.0\.1:<PORT>' "README local http access"
