@@ -25,6 +25,16 @@ type Client struct {
 	brew   PackageAdapter
 }
 
+type HTTPStatusError struct {
+	Method     string
+	Path       string
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("%s %s failed with status %d", e.Method, e.Path, e.StatusCode)
+}
+
 func DefaultConfig() Config {
 	return Config{HeartbeatInterval: 30 * time.Second}
 }
@@ -38,6 +48,7 @@ func LoadConfig(path string) (Config, error) {
 	if err := json.Unmarshal(body, &config); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)
 	}
+	config = normalizeConfig(config)
 	if config.ServerURL == "" || config.MachineID == "" || config.MachineToken == "" {
 		return Config{}, fmt.Errorf("config requires serverURL, machineId, and machineToken")
 	}
@@ -49,11 +60,16 @@ func New(config Config) *Client {
 }
 
 func NewWithAdapters(config Config, brew PackageAdapter) *Client {
+	config = normalizeConfig(config)
+	return &Client{config: config, http: &http.Client{Timeout: 10 * time.Second}, brew: brew}
+}
+
+func normalizeConfig(config Config) Config {
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 30 * time.Second
 	}
 	config.ServerURL = strings.TrimRight(config.ServerURL, "/")
-	return &Client{config: config, http: &http.Client{Timeout: 10 * time.Second}, brew: brew}
+	return config
 }
 
 func (c *Client) Endpoints() []string {
@@ -150,7 +166,7 @@ func (c *Client) getJSON(ctx context.Context, path string, dst interface{}) erro
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("GET %s failed with status %d", path, response.StatusCode)
+		return &HTTPStatusError{Method: http.MethodGet, Path: path, StatusCode: response.StatusCode}
 	}
 	if dst == nil {
 		_, _ = io.Copy(io.Discard, response.Body)
@@ -186,7 +202,7 @@ func (c *Client) postJSONWithIdempotency(ctx context.Context, path string, body 
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("POST %s failed with status %d", path, response.StatusCode)
+		return &HTTPStatusError{Method: http.MethodPost, Path: path, StatusCode: response.StatusCode}
 	}
 	return nil
 }

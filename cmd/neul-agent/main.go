@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
 	"github.com/4gly/neul/internal/agent"
 )
@@ -33,12 +35,16 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stdout, "agent tick completed")
 		return
 	}
-	ticker := time.NewTicker(config.HeartbeatInterval)
-	defer ticker.Stop()
-	for {
-		if err := client.Tick(ctx); err != nil {
-			_, _ = fmt.Fprintln(os.Stderr, err)
-		}
-		<-ticker.C
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	if err := client.Run(ctx, agent.RunOptions{
+		Logger: logger,
+		ConfigReloader: func() (agent.Config, error) {
+			return agent.LoadConfig(*configPath)
+		},
+	}); err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 }
