@@ -102,12 +102,14 @@ func queryMachineSummaries(r *http.Request, db *sql.DB, now time.Time) ([]machin
 func queryMachineCountsByMachine(r *http.Request, db *sql.DB) (map[string]machineCounts, error) {
 	rows, err := db.QueryContext(
 		r.Context(),
-		`SELECT machine_id, resource_id, status
+		`SELECT machine_id, resource_id, status, resource_desired_version, report_desired_version
 		 FROM (
 			 SELECT
 				 rr.machine_id,
 				 e.resource_id,
 				 e.status,
+				 r.desired_version AS resource_desired_version,
+				 e.desired_version AS report_desired_version,
 				 ROW_NUMBER() OVER (
 					 PARTITION BY rr.machine_id, e.resource_id
 					 ORDER BY unixepoch(e.created_at) DESC, e.created_at DESC, e.rowid DESC
@@ -130,12 +132,18 @@ func queryMachineCountsByMachine(r *http.Request, db *sql.DB) (map[string]machin
 		var machineID string
 		var resourceID string
 		var status string
-		if err := rows.Scan(&machineID, &resourceID, &status); err != nil {
+		var resourceDesiredVersion int
+		var reportDesiredVersion int
+		if err := rows.Scan(&machineID, &resourceID, &status, &resourceDesiredVersion, &reportDesiredVersion); err != nil {
 			return nil, fmt.Errorf("scan count: %w", err)
 		}
 		counts := countsByMachine[machineID]
 		counts.ResourceCount++
-		switch domain.ResourceState(status) {
+		state := domain.ResourceState(status)
+		if reportDesiredVersion < resourceDesiredVersion {
+			state = domain.ResourceStatePending
+		}
+		switch state {
 		case domain.ResourceStateDrifted:
 			counts.Drifted++
 		case domain.ResourceStateBlocked:

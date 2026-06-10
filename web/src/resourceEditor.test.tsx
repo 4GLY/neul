@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResourceEditor } from "./ResourceEditor";
+import type { ResourceRow } from "./types";
 
 describe("ResourceEditor", () => {
 	afterEach(() => {
@@ -43,6 +44,52 @@ describe("ResourceEditor", () => {
 		expect(document.body.textContent).not.toContain("secret");
 	});
 
+	it("updates an existing brew package through the resources API", async () => {
+		const calls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push(
+					`${init?.method ?? "GET"} ${String(input)} ${String(init?.body)}`,
+				);
+				return new Response(
+					JSON.stringify({
+						id: "resource_1",
+						kind: "package",
+						name: "kubectl",
+						desiredVersion: 2,
+						agentSupport: "supported",
+						spec: {
+							name: "kubectl",
+							sourceKind: "brew",
+							desiredVersion: "1.2.3",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+
+		await renderEditor([
+			{
+				desired: "latest",
+				group: "패키지",
+				id: "resource_1",
+				kind: "package",
+				name: "kubectl",
+				sourceKind: "brew",
+			},
+		]);
+		await click("Edit kubectl");
+		setInput("Package version", "1.2.3");
+		await click("Save package");
+
+		expect(
+			calls.some((call) => call.includes("PATCH /api/resources/resource_1")),
+		).toBe(true);
+		expect(document.body.textContent).toContain("저장했습니다");
+	});
+
 	it("shows a Korean server error for hostile dotfile paths", async () => {
 		vi.stubGlobal(
 			"fetch",
@@ -69,12 +116,16 @@ describe("ResourceEditor", () => {
 	});
 });
 
-async function renderEditor(): Promise<void> {
+async function renderEditor(
+	resources: readonly ResourceRow[] = [],
+): Promise<void> {
 	const rootElement = document.createElement("div");
 	document.body.appendChild(rootElement);
 	const root = createRoot(rootElement);
 	await act(async () => {
-		root.render(<ResourceEditor onSaved={() => undefined} />);
+		root.render(
+			<ResourceEditor resources={resources} onSaved={() => undefined} />,
+		);
 	});
 }
 

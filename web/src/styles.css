@@ -379,6 +379,32 @@ select {
 	min-height: 88px;
 	resize: vertical;
 }
+.resource-list {
+	display: grid;
+	min-width: 280px;
+	gap: 8px;
+}
+.resource-list-row {
+	display: grid;
+	grid-template-columns: minmax(120px, 1fr) auto auto;
+	align-items: center;
+	gap: 8px;
+	border: 1px solid #e0e6ef;
+	border-radius: 8px;
+	padding: 8px;
+}
+.resource-list-row span {
+	display: grid;
+	gap: 2px;
+}
+.resource-list-row button {
+	border: 1px solid #dce2eb;
+	border-radius: 7px;
+	background: #fff;
+	color: #344054;
+	padding: 7px 9px;
+	font-weight: 650;
+}
 .editor-message {
 	color: #1459d9;
 	font-weight: 700;

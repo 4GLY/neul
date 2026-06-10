@@ -3,11 +3,13 @@ import {
 	createLocalSession,
 	createPackageResource,
 	createPairingInvite,
+	deleteResource,
 	LocalSessionError,
 	loadDashboardData,
 	OwnerSessionRequiredError,
 	pollPairingInvite,
 	repairDrift,
+	updatePackageResource,
 } from "./api";
 
 describe("loadDashboardData", () => {
@@ -353,6 +355,80 @@ describe("owner mutation API auth", () => {
 		await expect(repairDrift("machine_1")).rejects.toBeInstanceOf(
 			OwnerSessionRequiredError,
 		);
+	});
+});
+
+describe("package desired-state mutations", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("updates a package resource with a PATCH body", async () => {
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+			readonly body: BodyInit | null | undefined;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({
+					url: String(input),
+					method: init?.method,
+					body: init?.body,
+				});
+				return jsonResponse({
+					id: "resource_1",
+					kind: "package",
+					name: "kubectl",
+					desiredVersion: 2,
+					agentSupport: "supported",
+					spec: {
+						name: "kubectl",
+						sourceKind: "brew",
+						desiredVersion: "1.2.3",
+					},
+				});
+			},
+		);
+
+		await updatePackageResource("resource_1", {
+			name: "kubectl",
+			sourceKind: "brew",
+			desiredVersion: "1.2.3",
+		});
+
+		expect(calls).toEqual([
+			{
+				url: "/api/resources/resource_1",
+				method: "PATCH",
+				body: JSON.stringify({
+					name: "kubectl",
+					sourceKind: "brew",
+					desiredVersion: "1.2.3",
+				}),
+			},
+		]);
+	});
+
+	it("deletes a resource through the DELETE endpoint", async () => {
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({ url: String(input), method: init?.method });
+				return new Response(null, { status: 204 });
+			},
+		);
+
+		await deleteResource("resource_1");
+
+		expect(calls).toEqual([
+			{ url: "/api/resources/resource_1", method: "DELETE" },
+		]);
 	});
 });
 

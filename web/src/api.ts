@@ -15,6 +15,12 @@ import {
 import type { Activity, Machine, ResourceRow } from "./types";
 
 export {
+	createDotfileResource,
+	createPackageResource,
+	deleteResource,
+	updatePackageResource,
+} from "./apiResources";
+export {
 	createLocalSession,
 	LocalSessionError,
 	OwnerSessionRequiredError,
@@ -77,25 +83,6 @@ export async function loadDashboardData(): Promise<DashboardData> {
 	return data;
 }
 
-export async function createPackageResource(input: {
-	readonly name: string;
-	readonly sourceKind: "brew" | "apt" | "mise";
-	readonly desiredVersion: string;
-	readonly targetSegment: string;
-}): Promise<ApiResource> {
-	return postResource("/api/resources/package", input);
-}
-
-export async function createDotfileResource(input: {
-	readonly path: string;
-	readonly content: string;
-	readonly mode: string;
-	readonly applyMode: "copy" | "symlink";
-	readonly targetSegment: string;
-}): Promise<ApiResource> {
-	return postResource("/api/resources/dotfile", input);
-}
-
 export async function repairDrift(machineId: string): Promise<void> {
 	const response = await fetch(`/api/machines/${machineId}/repair-drift`, {
 		method: "POST",
@@ -127,31 +114,6 @@ async function fetchJSON<T>(path: string): Promise<T> {
 		throw new Error("대시보드를 불러오지 못했습니다");
 	}
 	return (await response.json()) as T;
-}
-
-async function postResource<T extends object>(
-	path: string,
-	body: T,
-): Promise<ApiResource> {
-	const response = await fetch(path, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	if (!response.ok) {
-		const code = await errorCodeFromResponse(response);
-		if (
-			response.status === 401 &&
-			(code === "unauthorized" || code === "owner_session_required")
-		) {
-			throw new OwnerSessionRequiredError();
-		}
-		if (code === "path_not_allowed") {
-			throw new Error("경로를 사용할 수 없습니다");
-		}
-		throw new Error("리소스를 저장하지 못했습니다");
-	}
-	return (await response.json()) as ApiResource;
 }
 
 async function isOwnerSessionRequiredResponse(
@@ -210,16 +172,33 @@ function mapMachine(machine: ApiDashboard["machines"][number]): Machine {
 }
 
 function mapResource(resource: ApiResource): ResourceRow {
-	const group = resource.kind === "package" ? "패키지" : "dotfile";
+	const group: ResourceRow["group"] =
+		resource.kind === "package" ? "패키지" : "dotfile";
 	const desired =
 		typeof resource.spec.desiredVersion === "string"
 			? resource.spec.desiredVersion
 			: `v${resource.desiredVersion}`;
-	return {
+	const base: ResourceRow = {
 		group,
+		id: resource.id,
+		kind: resource.kind,
 		name: resource.name,
 		desired,
 	};
+	const sourceKind = packageSourceKind(resource.spec.sourceKind);
+	if (sourceKind === undefined) {
+		return base;
+	}
+	return { ...base, sourceKind };
+}
+
+function packageSourceKind(
+	value: unknown,
+): "brew" | "apt" | "mise" | undefined {
+	if (value === "brew" || value === "apt" || value === "mise") {
+		return value;
+	}
+	return undefined;
 }
 
 function mapActivities(_dashboard: ApiDashboard): readonly Activity[] {

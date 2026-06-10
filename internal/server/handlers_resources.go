@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -52,6 +53,10 @@ func handleCreatePackageResource(db *sql.DB, clock func() time.Time) http.Handle
 			writeJSONError(w, http.StatusInternalServerError, "resource_create_failed", "Could not create package resource.")
 			return
 		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
+			return
+		}
 		writeJSON(w, http.StatusCreated, resource)
 	})
 }
@@ -91,11 +96,15 @@ func handleCreateDotfileResource(db *sql.DB, clock func() time.Time, homeDir str
 			writeJSONError(w, http.StatusInternalServerError, "resource_create_failed", "Could not create dotfile resource.")
 			return
 		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
+			return
+		}
 		writeJSON(w, http.StatusCreated, resource)
 	})
 }
 
-func handlePatchResource(db *sql.DB, clock func() time.Time) http.Handler {
+func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resourceID := r.PathValue("resourceId")
 		var patch map[string]interface{}
@@ -103,7 +112,21 @@ func handlePatchResource(db *sql.DB, clock func() time.Time) http.Handler {
 			writeJSONError(w, http.StatusBadRequest, "bad_json", "Request body must be JSON.")
 			return
 		}
-		specJSON, err := json.Marshal(patch)
+		current, err := queryResourceByID(r, db, resourceID)
+		if err != nil {
+			if !errors.Is(err, sql.ErrNoRows) {
+				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
+				return
+			}
+			writeJSONError(w, http.StatusNotFound, "resource_not_found", "Resource was not found.")
+			return
+		}
+		nextSpec, nextName, err := mergeResourcePatch(homeDir, current, patch)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
+			return
+		}
+		specJSON, err := json.Marshal(nextSpec)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
 			return
@@ -111,7 +134,8 @@ func handlePatchResource(db *sql.DB, clock func() time.Time) http.Handler {
 		now := clock().UTC().Format(time.RFC3339Nano)
 		result, err := db.ExecContext(
 			r.Context(),
-			`UPDATE resources SET spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+			`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+			nextName,
 			string(specJSON),
 			now,
 			resourceID,
@@ -128,6 +152,10 @@ func handlePatchResource(db *sql.DB, clock func() time.Time) http.Handler {
 		resource, err := queryResourceByID(r, db, resourceID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
+			return
+		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
 			return
 		}
 		writeJSON(w, http.StatusOK, resource)
@@ -148,133 +176,6 @@ func handleDeleteResource(db *sql.DB) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
-}
-
-type resourceResponse struct {
-	ID             string                 `json:"id"`
-	Kind           string                 `json:"kind"`
-	Name           string                 `json:"name"`
-	DesiredVersion int                    `json:"desiredVersion"`
-	AgentSupport   string                 `json:"agentSupport"`
-	Spec           map[string]interface{} `json:"spec"`
-	CreatedAt      string                 `json:"createdAt"`
-	UpdatedAt      string                 `json:"updatedAt"`
-}
-
-func insertResource(r *http.Request, db *sql.DB, clock func() time.Time, segmentName string, kind string, name string, spec map[string]string) (resourceResponse, error) {
-	segmentID, err := segmentIDByName(r, db, segmentName)
-	if err != nil {
-		return resourceResponse{}, err
-	}
-	specJSON, err := json.Marshal(spec)
-	if err != nil {
-		return resourceResponse{}, fmt.Errorf("marshal spec: %w", err)
-	}
-	now := clock().UTC().Format(time.RFC3339Nano)
-	resourceID := "resource_" + hashSecret(kind + name + now)[:16]
-	_, err = db.ExecContext(
-		r.Context(),
-		`INSERT INTO resources (id, segment_id, kind, name, spec_json, desired_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-		resourceID,
-		segmentID,
-		kind,
-		name,
-		string(specJSON),
-		now,
-		now,
-	)
-	if err != nil {
-		return resourceResponse{}, fmt.Errorf("insert resource: %w", err)
-	}
-	if kind == string(domain.ResourceKindDotfile) {
-		_, err = db.ExecContext(
-			r.Context(),
-			`INSERT INTO file_versions (id, resource_id, content_hash, content, created_at) VALUES (?, ?, ?, ?, ?)`,
-			"file_version_"+hashSecret(resourceID + spec["content"])[:16],
-			resourceID,
-			hashSecret(spec["content"]),
-			spec["content"],
-			now,
-		)
-		if err != nil {
-			return resourceResponse{}, fmt.Errorf("insert file version: %w", err)
-		}
-	}
-	return queryResourceByID(r, db, resourceID)
-}
-
-func queryResources(r *http.Request, db *sql.DB) ([]resourceResponse, error) {
-	rows, err := db.QueryContext(
-		r.Context(),
-		`SELECT id, kind, name, spec_json, desired_version, created_at, updated_at FROM resources WHERE kind != 'secret' ORDER BY created_at DESC, id ASC`,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query resources: %w", err)
-	}
-	defer rows.Close()
-
-	resources := make([]resourceResponse, 0)
-	for rows.Next() {
-		resource, err := scanResource(rows)
-		if err != nil {
-			return nil, err
-		}
-		resources = append(resources, resource)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate resources: %w", err)
-	}
-	return resources, nil
-}
-
-func queryResourceByID(r *http.Request, db *sql.DB, resourceID string) (resourceResponse, error) {
-	row := db.QueryRowContext(
-		r.Context(),
-		`SELECT id, kind, name, spec_json, desired_version, created_at, updated_at FROM resources WHERE id = ?`,
-		resourceID,
-	)
-	return scanResource(row)
-}
-
-type resourceScanner interface {
-	Scan(dest ...interface{}) error
-}
-
-func scanResource(scanner resourceScanner) (resourceResponse, error) {
-	var response resourceResponse
-	var specJSON string
-	if err := scanner.Scan(&response.ID, &response.Kind, &response.Name, &specJSON, &response.DesiredVersion, &response.CreatedAt, &response.UpdatedAt); err != nil {
-		return resourceResponse{}, fmt.Errorf("scan resource: %w", err)
-	}
-	if err := json.Unmarshal([]byte(specJSON), &response.Spec); err != nil {
-		return resourceResponse{}, fmt.Errorf("decode resource spec: %w", err)
-	}
-	response.AgentSupport = agentSupport(response)
-	return response, nil
-}
-
-func segmentIDByName(r *http.Request, db *sql.DB, segmentName string) (string, error) {
-	var segmentID string
-	err := db.QueryRowContext(r.Context(), `SELECT id FROM segments WHERE name = ? ORDER BY priority LIMIT 1`, segmentName).Scan(&segmentID)
-	if err != nil {
-		return "", fmt.Errorf("query segment: %w", err)
-	}
-	return segmentID, nil
-}
-
-func validPackageSource(sourceKind string) bool {
-	return sourceKind == "brew" || sourceKind == "apt" || sourceKind == "mise"
-}
-
-func agentSupport(resource resourceResponse) string {
-	if resource.Kind != string(domain.ResourceKindPackage) {
-		return "supported"
-	}
-	sourceKind, _ := resource.Spec["sourceKind"].(string)
-	if sourceKind == "brew" {
-		return "supported"
-	}
-	return "unsupported"
 }
 
 func normalizeAllowedDotfilePath(homeDir string, rawPath string) (string, error) {

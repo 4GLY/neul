@@ -173,6 +173,7 @@ export function DashboardWorkspace({
 						) : null}
 						{editorOpen ? (
 							<ResourceEditor
+								resources={resources}
 								onOwnerSessionRequired={onOwnerSessionRequired}
 								onSaved={onResourceSaved}
 							/>
