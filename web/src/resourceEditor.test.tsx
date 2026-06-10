@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ResourceEditor } from "./ResourceEditor";
+import type { ApiResource } from "./apiTypes";
 
 describe("ResourceEditor", () => {
 	afterEach(() => {
@@ -67,14 +68,152 @@ describe("ResourceEditor", () => {
 		expect(document.body.textContent).toContain("경로를 사용할 수 없습니다");
 		expect(document.body.textContent).not.toContain("저장했습니다");
 	});
+
+	it("updates and deletes an existing dotfile resource", async () => {
+		const calls: {
+			readonly url: string;
+			readonly method: string;
+			readonly body: string;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({
+					url: String(input),
+					method: init?.method ?? "GET",
+					body: String(init?.body ?? ""),
+				});
+				if (init?.method === "DELETE") {
+					return new Response(null, { status: 204 });
+				}
+				return new Response(
+					JSON.stringify({
+						id: "resource_dot_zshrc",
+						kind: "dotfile",
+						name: "~/.zshrc",
+						desiredVersion: 4,
+						agentSupport: "supported",
+						spec: {
+							path: "~/.zshrc",
+							content: "export EDITOR=nvim\n",
+							mode: "0600",
+							applyMode: "symlink",
+							targetSegment: "base",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+
+		await renderEditor({
+			resources: [
+				{
+					id: "resource_dot_zshrc",
+					kind: "dotfile",
+					name: "~/.zshrc",
+					desiredVersion: 3,
+					agentSupport: "supported",
+					spec: {
+						path: "~/.zshrc",
+						content: "alias ll='ls -la'\n",
+						mode: "0644",
+						applyMode: "copy",
+						targetSegment: "base",
+					},
+				},
+			],
+		});
+		await click("Dotfile");
+		selectOption("Existing dotfile", "resource_dot_zshrc");
+		setTextarea("Dotfile content", "export EDITOR=nvim\n");
+		setInput("Dotfile mode", "0600");
+		selectOption("Dotfile apply mode", "symlink");
+		await click("Update dotfile");
+		await click("Delete dotfile");
+
+		expect(calls).toEqual([
+			{
+				url: "/api/resources/resource_dot_zshrc",
+				method: "PATCH",
+				body: JSON.stringify({
+					path: "~/.zshrc",
+					content: "export EDITOR=nvim\n",
+					mode: "0600",
+					applyMode: "symlink",
+					targetSegment: "base",
+				}),
+			},
+			{
+				url: "/api/resources/resource_dot_zshrc",
+				method: "DELETE",
+				body: "",
+			},
+		]);
+		expect(document.body.textContent).toContain("삭제했습니다");
+	});
+
+	it("uses update as the primary action for a selected dotfile", async () => {
+		const calls: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+				return new Response(
+					JSON.stringify({
+						id: "resource_dot_zshrc",
+						kind: "dotfile",
+						name: "~/.zshrc",
+						desiredVersion: 2,
+						agentSupport: "supported",
+						spec: {
+							path: "~/.zshrc",
+							content: "",
+							mode: "0644",
+							applyMode: "copy",
+						},
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			},
+		);
+
+		await renderEditor({
+			resources: [
+				{
+					id: "resource_dot_zshrc",
+					kind: "dotfile",
+					name: "~/.zshrc",
+					desiredVersion: 1,
+					agentSupport: "supported",
+					spec: {
+						path: "~/.zshrc",
+						content: "",
+						mode: "0644",
+						applyMode: "copy",
+					},
+				},
+			],
+		});
+		await click("Dotfile");
+		selectOption("Existing dotfile", "resource_dot_zshrc");
+		await click("Update dotfile");
+
+		expect(calls).toEqual(["PATCH /api/resources/resource_dot_zshrc"]);
+		expect(calls).not.toContain("POST /api/resources/dotfile");
+	});
 });
 
-async function renderEditor(): Promise<void> {
+type RenderEditorOptions = {
+	readonly resources?: readonly ApiResource[];
+};
+
+async function renderEditor(options: RenderEditorOptions = {}): Promise<void> {
 	const rootElement = document.createElement("div");
 	document.body.appendChild(rootElement);
 	const root = createRoot(rootElement);
 	await act(async () => {
-		root.render(<ResourceEditor onSaved={() => undefined} />);
+		root.render(<ResourceEditor onSaved={() => undefined} {...options} />);
 	});
 }
 
@@ -101,6 +240,19 @@ function setTextarea(label: string, value: string): void {
 	act(() => {
 		textarea.value = value;
 		textarea.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+}
+
+function selectOption(label: string, value: string): void {
+	const select = document.querySelector<HTMLSelectElement>(
+		`select[aria-label="${label}"]`,
+	);
+	if (select === null) {
+		throw new Error(`select ${label} not found`);
+	}
+	act(() => {
+		select.value = value;
+		select.dispatchEvent(new Event("change", { bubbles: true }));
 	});
 }
 

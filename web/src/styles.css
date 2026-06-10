@@ -273,6 +273,9 @@ small {
 	background: #fff;
 	color: #344054;
 }
+.danger-button {
+	color: #b42318;
+}
 
 .metric-strip {
 	display: grid;
@@ -358,6 +361,7 @@ select {
 }
 .editor-form {
 	align-items: end;
+	flex-wrap: wrap;
 }
 .editor-form label {
 	display: grid;
