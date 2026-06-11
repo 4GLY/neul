@@ -50,7 +50,7 @@ func NewRouter(config Config) http.Handler {
 	mux.Handle("GET /api/resources", requireOwnerSession(config.DB, handleListResources(config.DB)))
 	mux.Handle("POST /api/resources/package", requireOwnerSession(config.DB, handleCreatePackageResource(config.DB, config.Clock)))
 	mux.Handle("POST /api/resources/dotfile", requireOwnerSession(config.DB, handleCreateDotfileResource(config.DB, config.Clock, config.HomeDir)))
-	mux.Handle("PATCH /api/resources/{resourceId}", requireOwnerSession(config.DB, handlePatchResource(config.DB, config.Clock)))
+	mux.Handle("PATCH /api/resources/{resourceId}", requireOwnerSession(config.DB, handlePatchResource(config.DB, config.Clock, config.HomeDir)))
 	mux.Handle("DELETE /api/resources/{resourceId}", requireOwnerSession(config.DB, handleDeleteResource(config.DB)))
 	mux.Handle("POST /api/agent/heartbeat", requireMachineToken(config.DB, handleAgentHeartbeat(config.DB, config.Clock)))
 	mux.Handle("GET /api/agent/desired-state", requireMachineToken(config.DB, handleAgentDesiredState(config.DB)))

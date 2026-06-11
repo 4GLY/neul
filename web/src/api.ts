@@ -19,11 +19,18 @@ export {
 	LocalSessionError,
 	OwnerSessionRequiredError,
 } from "./localSession";
+export {
+	createDotfileResource,
+	createPackageResource,
+	deleteResource,
+	updateResource,
+} from "./resourceApi";
 
 export type DashboardData = {
 	readonly metrics: DashboardMetrics;
 	readonly machines: readonly Machine[];
 	readonly resources: readonly ResourceRow[];
+	readonly resourceRecords: ApiResources["resources"];
 	readonly activities: readonly Activity[];
 	readonly emptyStateAction?: string;
 };
@@ -69,31 +76,13 @@ export async function loadDashboardData(): Promise<DashboardData> {
 		metrics: mapMetrics(dashboard.metrics, machines.length),
 		machines,
 		resources: resources.resources.map(mapResource),
+		resourceRecords: resources.resources,
 		activities: mapActivities(dashboard),
 	};
 	if (dashboard.emptyState?.action !== undefined) {
 		return { ...data, emptyStateAction: dashboard.emptyState.action };
 	}
 	return data;
-}
-
-export async function createPackageResource(input: {
-	readonly name: string;
-	readonly sourceKind: "brew" | "apt" | "mise";
-	readonly desiredVersion: string;
-	readonly targetSegment: string;
-}): Promise<ApiResource> {
-	return postResource("/api/resources/package", input);
-}
-
-export async function createDotfileResource(input: {
-	readonly path: string;
-	readonly content: string;
-	readonly mode: string;
-	readonly applyMode: "copy" | "symlink";
-	readonly targetSegment: string;
-}): Promise<ApiResource> {
-	return postResource("/api/resources/dotfile", input);
 }
 
 export async function repairDrift(machineId: string): Promise<void> {
@@ -127,31 +116,6 @@ async function fetchJSON<T>(path: string): Promise<T> {
 		throw new Error("대시보드를 불러오지 못했습니다");
 	}
 	return (await response.json()) as T;
-}
-
-async function postResource<T extends object>(
-	path: string,
-	body: T,
-): Promise<ApiResource> {
-	const response = await fetch(path, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-	if (!response.ok) {
-		const code = await errorCodeFromResponse(response);
-		if (
-			response.status === 401 &&
-			(code === "unauthorized" || code === "owner_session_required")
-		) {
-			throw new OwnerSessionRequiredError();
-		}
-		if (code === "path_not_allowed") {
-			throw new Error("경로를 사용할 수 없습니다");
-		}
-		throw new Error("리소스를 저장하지 못했습니다");
-	}
-	return (await response.json()) as ApiResource;
 }
 
 async function isOwnerSessionRequiredResponse(

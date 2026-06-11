@@ -113,6 +113,89 @@ func TestAgentReport_heartbeatDesiredStateCommandsAndCommandAck(t *testing.T) {
 	}
 }
 
+func TestAgentDesiredState_includesUpdatedDotfileAndReport(t *testing.T) {
+	// Given
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, ownerCookie := authenticatedRouterWithConfig(t, Config{DB: db, Clock: func() time.Time { return now }, HomeDir: t.TempDir()})
+	seedMachineWithToken(t, db, "machine_dotfile", "mtn_dotfile")
+	resourceID := createDotfileResource(t, router, ownerCookie, `{"path":"~/.zshrc","content":"export NEUL=v1\n","mode":"0644","applyMode":"copy","targetSegment":"base"}`)
+	patch := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/resources/"+resourceID,
+		strings.NewReader(`{"path":"~/.zshrc","content":"export NEUL=v2\n","mode":"0600","applyMode":"symlink","targetSegment":"base"}`),
+	)
+	patch.AddCookie(ownerCookie)
+	patchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(patchRecorder, patch)
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want %d; body=%s", patchRecorder.Code, http.StatusOK, patchRecorder.Body.String())
+	}
+
+	// When
+	desired := httptest.NewRequest(http.MethodGet, "/api/agent/desired-state", http.NoBody)
+	desired.Header.Set("Authorization", "Bearer mtn_dotfile")
+	desiredRecorder := httptest.NewRecorder()
+	router.ServeHTTP(desiredRecorder, desired)
+
+	// Then
+	if desiredRecorder.Code != http.StatusOK {
+		t.Fatalf("desired status = %d, want %d; body=%s", desiredRecorder.Code, http.StatusOK, desiredRecorder.Body.String())
+	}
+	var desiredBody struct {
+		Resources []testDesiredResource `json:"resources"`
+	}
+	decodeJSONResponse(t, desiredRecorder, &desiredBody)
+	var dotfile testDesiredResource
+	for _, resource := range desiredBody.Resources {
+		if resource.ID == resourceID {
+			dotfile = resource
+			break
+		}
+	}
+	if dotfile.ID == "" {
+		t.Fatalf("desired resources = %+v, want updated dotfile %s", desiredBody.Resources, resourceID)
+	}
+	if dotfile.Kind != "dotfile" || dotfile.DesiredVersion != 2 {
+		t.Fatalf("dotfile kind/version = %s/%d, want dotfile/2", dotfile.Kind, dotfile.DesiredVersion)
+	}
+	wantSpec := map[string]string{
+		"path":      "~/.zshrc",
+		"content":   "export NEUL=v2\n",
+		"mode":      "0600",
+		"applyMode": "symlink",
+	}
+	for key, want := range wantSpec {
+		if dotfile.Spec[key] != want {
+			t.Fatalf("dotfile spec[%s] = %q, want %q", key, dotfile.Spec[key], want)
+		}
+	}
+
+	reportBody := `{"events":[{"resourceId":"` + resourceID + `","status":"in_sync","message":"dotfile applied","desiredVersion":2,"appliedVersion":2}]}`
+	report := httptest.NewRequest(http.MethodPost, "/api/agent/drift-report", strings.NewReader(reportBody))
+	report.Header.Set("Authorization", "Bearer mtn_dotfile")
+	report.Header.Set("Idempotency-Key", "dotfile-drift-report-1")
+	reportRecorder := httptest.NewRecorder()
+	router.ServeHTTP(reportRecorder, report)
+	if reportRecorder.Code != http.StatusAccepted {
+		t.Fatalf("report status = %d, want %d; body=%s", reportRecorder.Code, http.StatusAccepted, reportRecorder.Body.String())
+	}
+	var eventCount int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM reconcile_events WHERE resource_id = ? AND status = 'in_sync' AND desired_version = 2 AND applied_version = 2`, resourceID).Scan(&eventCount); err != nil {
+		t.Fatalf("query event count error = %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("event count = %d, want 1", eventCount)
+	}
+}
+
+type testDesiredResource struct {
+	ID             string            `json:"id"`
+	Kind           string            `json:"kind"`
+	DesiredVersion int               `json:"desiredVersion"`
+	Spec           map[string]string `json:"spec"`
+}
+
 func seedMachineWithToken(t *testing.T, db *sql.DB, machineID string, token string) {
 	t.Helper()
 	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
