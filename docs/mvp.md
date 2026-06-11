@@ -20,30 +20,58 @@ MVP의 핵심 성공 기준은 다음이다.
 
 #### 첫 머신 등록
 
-사용자는 웹에서 첫 머신 등록 wizard를 열고, 로컬 머신에서 생성된
-`neul agent enroll` 명령을 한 번 실행해 agent를 등록한다. 이번 MVP에서
-pair token possession은 owner approval로 간주한다. 별도의 hosted login,
-OAuth/SSO, pending approval table은 만들지 않는다.
+사용자는 웹에서 첫 머신 등록 wizard를 열고, packaged neul client를 설치한
+뒤 browser approval로 agent를 등록한다. 이번 MVP의 target flow는
+self-hosted owner session을 가진 브라우저가 승인 주체이고, agent는 outbound
+REST만 사용한다. 별도의 hosted login, OAuth/SSO, pending approval table은
+만들지 않는다.
 
 MVP 플로우:
 
+<!-- packaged-primary:start -->
+
 1. 웹 empty state에서 `첫 머신 등록`을 클릭한다.
-2. 서버가 10분 뒤 만료되는 pair token을 만들고 `expiresAt`을 반환한다.
-3. 웹은 `Run from your neul checkout:` 안내와 함께 다음 명령을 보여준다.
-   `go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once`
-4. CLI가 pair token을 claim하고 local config를 `0600` 권한으로 저장한다.
-5. `--connect-once`가 지정되면 CLI가 `agent.New(config).Tick(ctx)`를 한 번
-   실행해 heartbeat, desired-state fetch, drift/report 경로를 실제 agent와
-   같은 방식으로 통과한다.
-6. 웹은 pair poll 결과가 claim되면 `claimed_waiting_heartbeat` 상태로
-   전환하고, dashboard poll에서 첫 heartbeat를 확인한 뒤 `connected`로
-   전환한다.
+2. 웹은 packaged neul client 설치 안내를 보여준다.
+   - macOS: Homebrew tap 또는 signed .pkg
+   - Linux: Debian/Ubuntu .deb와 tarball
+3. 사용자가 `neul enroll --server <origin>`을 실행하면 client가
+   `127.0.0.1` local callback을 열고 browser approval URL을 연다.
+4. owner session이 있는 브라우저가 승인하면 서버는 10분 뒤 만료되는
+   one-time pair token을 만들고 `neul://enroll?server=<origin>&pair=<token>`
+   deep link 또는 local callback으로 client에 돌려준다.
+5. client는 pair token을 claim하고 local config를 `0600` 권한으로 저장한
+   뒤 user-level agent를 시작한다.
+6. agent가 heartbeat, desired-state fetch, drift/report 경로를 실제
+   reconcile 루프로 통과하면 웹은 `connected`로 전환한다.
 7. claim 이후 120초 안에 heartbeat가 보이지 않으면 웹은
    `agent_not_responding` 상태와 retry/help copy를 보여준다.
 
-pair token은 bearer credential이다. 웹은 pair token을 URL query string,
-`document.title`, browser history, log에 저장하지 않고, 명시적인 copyable
-command 안에서만 노출한다.
+First-run states: `not_logged_in`, `waiting_for_browser_approval`, `enrolled`,
+`offline`, `error`.
+
+Self-hosted owner approval model: self-hosted 서버에 이미 로그인한 owner
+session만 machine approval을 만들 수 있다. pair token possession은 browser
+approval이 끝난 뒤 client가 받는 단명 bearer credential이다. The allowed pair-token handoffs are `127.0.0.1` local callback responses, `neul://enroll` deep links,
+and the explicit fallback/debug command. 그 외 server log, general URL query
+string, `document.title`, browser history에는 pair token을 남기지 않는다.
+
+Device code is fallback-only: local callback 또는 `neul://` deep link가 막힌
+headless/SSH 환경에서만 device code를 보여준다.
+
+Approval API and package artifacts are target contract for the packaged-client
+implementation. Until they ship, executable local QA uses only the
+fallback/debug path below, and the wizard exposes that command separately from
+the primary packaged-client command.
+
+<!-- packaged-primary:end -->
+
+fallback/debug path:
+
+개발자나 QA가 packaged binary 없이 로컬 checkout에서 검증할 때만 기존
+copyable command를 사용한다. packaged approval flow가 구현되기 전까지 웹
+wizard도 이 명령을 fallback/debug로 별도 표시해 첫 사용자가 실제로 machine을
+claim하고 heartbeat까지 진행할 수 있게 한다. 이 경로는 primary UX가 아니며
+`Run with packaged neul client:` 명령과 분리한다.
 
 이 iteration에는 no /install.sh, no `curl | sh`, no native GUI, no hosted
 login, no WebSocket을 유지한다.
@@ -275,7 +303,8 @@ Agent는 HTTPS outbound REST만 사용한다. Agent가 desired state를 poll하�
 
 책임:
 
-- `neul agent enroll --server <url> --pair <token> --connect-once`
+- `neul enroll --server <origin>` packaged-client browser approval flow
+- `neul agent enroll --server <url> --pair <token> --connect-once` fallback/debug flow
 - `neul init --pair <code>` backward-compatible debug flow
 - `neul agent install` dry-run oriented future install flow
 - `neul agent status`

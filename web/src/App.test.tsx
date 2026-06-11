@@ -54,7 +54,9 @@ describe("App API states", () => {
 			url: "/api/pair/init",
 			method: "POST",
 		});
-		expect(document.body.textContent).toContain("Run from your neul checkout:");
+		expect(document.body.textContent).toContain(
+			"Run with packaged neul client:",
+		);
 	});
 
 	it("renders a loading state while dashboard data is pending", async () => {

@@ -10,19 +10,38 @@ describe("OnboardingWizard", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("creates an invite and renders the checkout-scoped enroll command", async () => {
+	it("creates an invite and renders the packaged-client enroll command", async () => {
 		const calls = stubFetchSequence([
 			{ code: "pair_123", expiresAt: "2026-06-06T12:10:00Z" },
 		]);
 
 		await renderWizard();
+		const commands = renderedCommands();
 
 		expect(calls[0]).toEqual({ url: "/api/pair/init", method: "POST" });
 		expect(document.body.textContent).toContain("명령 실행 대기 중");
-		expect(document.body.textContent).toContain("Run from your neul checkout:");
 		expect(document.body.textContent).toContain(
-			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
+			"macOS: Homebrew tap 또는 signed .pkg",
 		);
+		expect(document.body.textContent).toContain(
+			"Linux: Debian/Ubuntu .deb 또는 tarball",
+		);
+		expect(document.body.textContent).toContain(
+			"Run with packaged neul client:",
+		);
+		expect(document.body.textContent).toContain(
+			"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
+		);
+		expect(commands).toEqual([
+			"neul enroll --server http://localhost:3000",
+			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
+		]);
+		expect(commands[0]).not.toContain("pair_123");
+		expect(commands[0]).not.toContain("--pair");
+		expect(commands[0]).not.toContain("go run ./cmd/neul");
+		expect(commands[1]).toContain("pair_123");
+		expect(commands[1]).toContain("--pair");
+		expect(commands[1]).toContain("go run ./cmd/neul");
 		expect(document.body.textContent).not.toContain("setup_");
 	});
 
@@ -151,6 +170,12 @@ async function renderWizard({
 	await act(async () => {
 		await Promise.resolve();
 	});
+}
+
+function renderedCommands(): string[] {
+	return Array.from(document.querySelectorAll("code")).map(
+		(element) => element.textContent ?? "",
+	);
 }
 
 async function advanceTimers(milliseconds: number): Promise<void> {

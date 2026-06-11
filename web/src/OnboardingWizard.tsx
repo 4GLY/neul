@@ -144,7 +144,14 @@ export function OnboardingWizard({
 		};
 	}, [onConnected, onOwnerSessionRequired, state]);
 
-	const command = useMemo(() => {
+	const primaryCommand = useMemo(() => {
+		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
+			return "";
+		}
+		return `neul enroll --server ${window.location.origin}`;
+	}, [state]);
+
+	const fallbackCommand = useMemo(() => {
 		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
 			return "";
 		}
@@ -164,8 +171,15 @@ export function OnboardingWizard({
 		return (
 			<section className="state-panel" aria-label={copy.onboarding.title}>
 				<h2>{copy.onboarding.commandReady}</h2>
+				<ul>
+					{copy.onboarding.installOptions.map((option) => (
+						<li key={option}>{option}</li>
+					))}
+				</ul>
 				<p>{copy.onboarding.checkoutHint}</p>
-				<code>{command}</code>
+				<code>{primaryCommand}</code>
+				<p>{copy.onboarding.fallbackHint}</p>
+				<code>{fallbackCommand}</code>
 				<div className="actions">
 					<button className="secondary-button" type="button" onClick={onClose}>
 						취소

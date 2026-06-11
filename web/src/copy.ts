@@ -25,7 +25,7 @@ export const dashboardCopy = {
 	},
 	emptyState: {
 		title: "첫 머신을 등록하세요",
-		body: "이 브라우저에서 등록 명령을 만들고, neul checkout에서 한 번 실행하면 agent 연결을 확인합니다.",
+		body: "packaged neul client에서 등록 명령을 한 번 실행하면 agent 연결을 확인합니다.",
 		action: "첫 머신 등록",
 	},
 } as const;
@@ -42,15 +42,27 @@ export const onboardingCopy = {
 	used: "이미 사용된 등록 명령입니다.",
 	cancelled: "등록이 취소되었습니다.",
 	retry: "다시 만들기",
-	checkoutHint: "Run from your neul checkout:",
-	commandTemplate:
+	installOptions: [
+		"macOS: Homebrew tap 또는 signed .pkg",
+		"Linux: Debian/Ubuntu .deb 또는 tarball",
+	],
+	checkoutHint: "Run with packaged neul client:",
+	commandTemplate: "neul enroll --server <origin>",
+	fallbackHint:
+		"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
+	fallbackCommandTemplate:
 		"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
 	security: {
 		pairTokenKind: "bearer",
 		neverStorePairTokenIn: [
-			"URL query strings",
+			"general URL query strings outside enrollment handoff",
 			"document.title",
 			"browser history",
+		],
+		allowedPairTokenHandoffs: [
+			"127.0.0.1 local callback",
+			"neul:// enrollment deep link",
+			"fallback/debug command",
 		],
 	},
 } as const;

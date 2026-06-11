@@ -25,7 +25,7 @@ describe("Korean-first copy", () => {
 	it("defines the agent onboarding v2 copy contract", () => {
 		expect(copy.dashboard.emptyState).toEqual({
 			title: "첫 머신을 등록하세요",
-			body: "이 브라우저에서 등록 명령을 만들고, neul checkout에서 한 번 실행하면 agent 연결을 확인합니다.",
+			body: "packaged neul client에서 등록 명령을 한 번 실행하면 agent 연결을 확인합니다.",
 			action: "첫 머신 등록",
 		});
 		expect(copy.onboarding).toMatchObject({
@@ -34,16 +34,33 @@ describe("Korean-first copy", () => {
 			checkingAgent: "agent 연결 확인 중",
 			agentNotResponding: "agent 응답 없음",
 			connected: "연결됨",
-			checkoutHint: "Run from your neul checkout:",
+			checkoutHint: "Run with packaged neul client:",
+			fallbackHint:
+				"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 		});
+		expect(copy.onboarding.installOptions).toEqual([
+			"macOS: Homebrew tap 또는 signed .pkg",
+			"Linux: Debian/Ubuntu .deb 또는 tarball",
+		]);
+		expect(copy.onboarding.commandTemplate).toBe(
+			"neul enroll --server <origin>",
+		);
+		expect(copy.onboarding.fallbackCommandTemplate).toBe(
+			"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
+		);
 	});
 
 	it("documents pair-token handling as a browser leak guardrail", () => {
 		expect(copy.onboarding.security.pairTokenKind).toBe("bearer");
 		expect(copy.onboarding.security.neverStorePairTokenIn).toEqual([
-			"URL query strings",
+			"general URL query strings outside enrollment handoff",
 			"document.title",
 			"browser history",
+		]);
+		expect(copy.onboarding.security.allowedPairTokenHandoffs).toEqual([
+			"127.0.0.1 local callback",
+			"neul:// enrollment deep link",
+			"fallback/debug command",
 		]);
 	});
 });

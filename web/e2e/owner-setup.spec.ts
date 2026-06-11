@@ -163,9 +163,20 @@ test("authenticated dashboard and pair onboarding remain setup-token free", asyn
 			page.getByRole("button", { name: "첫 머신 등록" }),
 		).toBeVisible();
 		await page.getByRole("button", { name: "첫 머신 등록" }).click();
-		await page.getByText("Run from your neul checkout:").waitFor();
-		const command = await page.locator("code").first().textContent();
-		expect(command).not.toContain("setup_");
+		await page.getByText("Run with packaged neul client:").waitFor();
+		await page
+			.getByText(
+				"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
+			)
+			.waitFor();
+		const primaryCommand = await page.locator("code").first().textContent();
+		const fallbackCommand = await page.locator("code").nth(1).textContent();
+		expect(primaryCommand).not.toContain("setup_");
+		expect(primaryCommand).not.toContain("--pair");
+		expect(primaryCommand).not.toContain("go run ./cmd/neul");
+		expect(fallbackCommand).not.toContain("setup_");
+		expect(fallbackCommand).toContain("--pair");
+		expect(fallbackCommand).toContain("go run ./cmd/neul");
 		await assertNoTokenLeak(page, fixture.setupToken, leakSurfaces);
 		await page.screenshot({
 			fullPage: true,
