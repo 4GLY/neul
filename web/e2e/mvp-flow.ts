@@ -107,13 +107,14 @@ export async function postDriftReport(
 	baseURL: string,
 	enrolled: EnrolledMachine,
 	resourceId: string,
+	desiredVersion = 1,
 ): Promise<void> {
 	const response = await fetch(`${baseURL}/api/agent/drift-report`, {
 		body: JSON.stringify({
 			events: [
 				{
 					appliedVersion: 0,
-					desiredVersion: 1,
+					desiredVersion,
 					message: "brew check",
 					resourceId,
 					status: "drifted",

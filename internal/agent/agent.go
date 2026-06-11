@@ -3,11 +3,15 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -99,7 +103,7 @@ func (c *Client) Tick(ctx context.Context) error {
 			events = append(events, EvaluateResource(ctx, c.brew, resource))
 		}
 		report := driftReport{MachineID: c.config.MachineID, Events: events}
-		if err := c.postJSONWithIdempotency(ctx, "/api/agent/drift-report", report, "drift-"+c.config.MachineID); err != nil {
+		if err := c.postJSONWithIdempotency(ctx, "/api/agent/drift-report", report, driftIdempotencyKey(c.config.MachineID, desiredState.Resources, events)); err != nil {
 			return err
 		}
 	}
@@ -152,6 +156,43 @@ func commandStatus(commandType string) string {
 	default:
 		return "unsupported_command"
 	}
+}
+
+func driftIdempotencyKey(machineID string, resources []DesiredResource, events []ResourceEvent) string {
+	fingerprints := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		specJSON, err := json.Marshal(resource.Spec)
+		if err != nil {
+			specJSON = []byte("null")
+		}
+		fingerprints = append(fingerprints, strings.Join([]string{
+			"resource",
+			resource.ID,
+			resource.Kind,
+			resource.Name,
+			strconv.Itoa(resource.DesiredVersion),
+			string(specJSON),
+		}, ":"))
+	}
+	for _, event := range events {
+		fingerprints = append(fingerprints, strings.Join([]string{
+			"event",
+			event.ResourceID,
+			event.Status,
+			strconv.Itoa(event.DesiredVersion),
+			strconv.Itoa(event.AppliedVersion),
+		}, ":"))
+	}
+	sort.Strings(fingerprints)
+	var fingerprint strings.Builder
+	for _, value := range fingerprints {
+		fingerprint.WriteString(strconv.Itoa(len(value)))
+		fingerprint.WriteByte(':')
+		fingerprint.WriteString(value)
+		fingerprint.WriteByte(';')
+	}
+	sum := sha256.Sum256([]byte(fingerprint.String()))
+	return fmt.Sprintf("drift-%s-%s", machineID, hex.EncodeToString(sum[:])[:32])
 }
 
 func (c *Client) getJSON(ctx context.Context, path string, dst interface{}) error {

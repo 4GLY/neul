@@ -205,10 +205,7 @@ export function DesiredLivePreview({
 				<span>Desired</span>
 			</div>
 			{resources.map((resource) => (
-				<div
-					className="ledger-grid ledger-row"
-					key={`${resource.group}-${resource.name}`}
-				>
+				<div className="ledger-grid ledger-row" key={resource.id}>
 					<span>
 						<small>{resource.group}</small>
 						<b>{resource.name}</b>

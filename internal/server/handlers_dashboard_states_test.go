@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -106,6 +107,52 @@ func TestDashboardCounts_ignoreEventsWithoutCurrentResource(t *testing.T) {
 	}
 }
 
+func TestDashboard_marksDesiredStateEditsPendingUntilCurrentReport(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	seedMachineWithToken(t, db, "machine_pending_desired", "mtn_pending_desired")
+	resourceID := createPackageResource(t, router, cookie)
+
+	assertDashboardMachineState(t, router, cookie, "machine_pending_desired", "pending", 1, 0, 0, 1, 0)
+	postAgentReport(t, router, "mtn_pending_desired", "pending-in-sync-1", resourceID, "in_sync", 1, 1)
+	assertDashboardMachineState(t, router, cookie, "machine_pending_desired", "healthy", 0, 0, 0, 1, 1)
+
+	patch := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/resources/"+resourceID,
+		strings.NewReader(`{"desiredVersion":"1.2.3"}`),
+	)
+	patch.AddCookie(cookie)
+	patchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(patchRecorder, patch)
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want %d; body=%s", patchRecorder.Code, http.StatusOK, patchRecorder.Body.String())
+	}
+	assertDashboardMachineState(t, router, cookie, "machine_pending_desired", "pending", 1, 0, 0, 1, 0)
+	postAgentReport(t, router, "mtn_pending_desired", "pending-stale-1", resourceID, "in_sync", 1, 1)
+	assertDashboardMachineState(t, router, cookie, "machine_pending_desired", "pending", 1, 0, 0, 1, 0)
+	postAgentReport(t, router, "mtn_pending_desired", "pending-blocked-2", resourceID, "blocked", 2, 0)
+	assertDashboardMachineState(t, router, cookie, "machine_pending_desired", "blocked", 0, 0, 1, 1, 0)
+}
+
+func TestDashboard_marksExistingDesiredStatePendingForNewlyEnrolledMachine(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	createPackageResource(t, router, cookie)
+	claimed := claimMachineThroughPairing(t, router, cookie)
+	heartbeat := httptest.NewRequest(http.MethodPost, "/api/agent/heartbeat", strings.NewReader(`{"agentVersion":"0.1.0"}`))
+	heartbeat.Header.Set("Authorization", "Bearer "+claimed.machineToken)
+	heartbeatRecorder := httptest.NewRecorder()
+	router.ServeHTTP(heartbeatRecorder, heartbeat)
+	if heartbeatRecorder.Code != http.StatusNoContent {
+		t.Fatalf("heartbeat status = %d, want %d; body=%s", heartbeatRecorder.Code, http.StatusNoContent, heartbeatRecorder.Body.String())
+	}
+
+	assertDashboardMachineState(t, router, cookie, claimed.machineID, "pending", 1, 0, 0, 1, 0)
+}
+
 type dashboardStateResponse struct {
 	Metrics  map[string]int                `json:"metrics"`
 	Machines []dashboardStateMachineRecord `json:"machines"`
@@ -159,6 +206,89 @@ func assertDashboardMachine(
 		return
 	}
 	t.Fatalf("machine %s not found in %+v", id, body.Machines)
+}
+
+func assertDashboardMachineState(
+	t *testing.T,
+	router http.Handler,
+	cookie *http.Cookie,
+	id string,
+	status string,
+	pendingCount int,
+	driftCount int,
+	blockedCount int,
+	resourceCount int,
+	appliedCount int,
+) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/dashboard", http.NoBody)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var body dashboardStateResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", err, recorder.Body.String())
+	}
+	assertDashboardMachine(t, body, id, status, driftCount, pendingCount, blockedCount, resourceCount, appliedCount)
+}
+
+func postAgentReport(t *testing.T, router http.Handler, token string, idempotencyKey string, resourceID string, status string, desiredVersion int, appliedVersion int) {
+	t.Helper()
+	body := `{"events":[{"resourceId":"` + resourceID + `","status":"` + status + `","message":"brew check","desiredVersion":` + strconv.Itoa(desiredVersion) + `,"appliedVersion":` + strconv.Itoa(appliedVersion) + `}]}`
+	request := httptest.NewRequest(http.MethodPost, "/api/agent/drift-report", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Idempotency-Key", idempotencyKey)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("report status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+}
+
+type claimedMachine struct {
+	machineID    string
+	machineToken string
+}
+
+func claimMachineThroughPairing(t *testing.T, router http.Handler, cookie *http.Cookie) claimedMachine {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodPost, "/api/pair/init", http.NoBody)
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("pair init status = %d, want %d; body=%s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	var pair struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &pair); err != nil {
+		t.Fatalf("pair response JSON error = %v", err)
+	}
+	claim := httptest.NewRequest(
+		http.MethodPost,
+		"/api/pair/claim",
+		strings.NewReader(`{"code":"`+pair.Code+`","machine":{"name":"machine_late","os":"darwin","arch":"arm64","agentVersion":"0.1.0"}}`),
+	)
+	claimRecorder := httptest.NewRecorder()
+	router.ServeHTTP(claimRecorder, claim)
+	if claimRecorder.Code != http.StatusCreated {
+		t.Fatalf("pair claim status = %d, want %d; body=%s", claimRecorder.Code, http.StatusCreated, claimRecorder.Body.String())
+	}
+	var body struct {
+		MachineID    string `json:"machineId"`
+		MachineToken string `json:"machineToken"`
+	}
+	if err := json.Unmarshal(claimRecorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("claim response JSON error = %v", err)
+	}
+	if body.MachineID == "" || body.MachineToken == "" {
+		t.Fatalf("claim body = %+v, want machine id/token", body)
+	}
+	return claimedMachine{machineID: body.MachineID, machineToken: body.MachineToken}
 }
 
 func seedDashboardEvent(t *testing.T, db *sql.DB, machineID string, resourceID string, status string, desiredVersion int, appliedVersion int, createdAt time.Time) {

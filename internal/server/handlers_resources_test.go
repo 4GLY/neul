@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -361,6 +362,83 @@ func TestResources_patchAndDeleteIncrementDesiredVersion(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("resource count = %d, want deleted", count)
+	}
+}
+
+func TestResources_patchPackagePreservesBrewDesiredStateForAgent(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	seedMachineWithToken(t, db, "machine_desired", "mtn_desired")
+	resourceID := createPackageResource(t, router, cookie)
+
+	patch := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/resources/"+resourceID,
+		strings.NewReader(`{"desiredVersion":"1.2.3"}`),
+	)
+	patch.AddCookie(cookie)
+	patchRecorder := httptest.NewRecorder()
+	router.ServeHTTP(patchRecorder, patch)
+	if patchRecorder.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, want %d; body=%s", patchRecorder.Code, http.StatusOK, patchRecorder.Body.String())
+	}
+
+	desired := httptest.NewRequest(http.MethodGet, "/api/agent/desired-state", http.NoBody)
+	desired.Header.Set("Authorization", "Bearer mtn_desired")
+	desiredRecorder := httptest.NewRecorder()
+	router.ServeHTTP(desiredRecorder, desired)
+	if desiredRecorder.Code != http.StatusOK {
+		t.Fatalf("desired status = %d, want %d; body=%s", desiredRecorder.Code, http.StatusOK, desiredRecorder.Body.String())
+	}
+	var body struct {
+		Resources []resourceResponse `json:"resources"`
+	}
+	if err := json.Unmarshal(desiredRecorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", err, desiredRecorder.Body.String())
+	}
+	if len(body.Resources) != 1 {
+		t.Fatalf("resource count = %d, want 1; body=%s", len(body.Resources), desiredRecorder.Body.String())
+	}
+	resource := body.Resources[0]
+	if resource.ID != resourceID || resource.Name != "kubectl" || resource.DesiredVersion != 2 {
+		t.Fatalf("resource = %+v, want patched kubectl desired version 2", resource)
+	}
+	if resource.Spec["sourceKind"] != "brew" || resource.Spec["desiredVersion"] != "1.2.3" || resource.Spec["name"] != "kubectl" {
+		t.Fatalf("spec = %+v, want preserved brew desired state", resource.Spec)
+	}
+}
+
+func TestResources_deletePackageRemovesFromAgentDesiredState(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	seedMachineWithToken(t, db, "machine_delete_desired", "mtn_delete_desired")
+	resourceID := createPackageResource(t, router, cookie)
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, "/api/resources/"+resourceID, http.NoBody)
+	deleteRequest.AddCookie(cookie)
+	deleteRecorder := httptest.NewRecorder()
+	router.ServeHTTP(deleteRecorder, deleteRequest)
+	if deleteRecorder.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want %d; body=%s", deleteRecorder.Code, http.StatusNoContent, deleteRecorder.Body.String())
+	}
+
+	desired := httptest.NewRequest(http.MethodGet, "/api/agent/desired-state", http.NoBody)
+	desired.Header.Set("Authorization", "Bearer mtn_delete_desired")
+	desiredRecorder := httptest.NewRecorder()
+	router.ServeHTTP(desiredRecorder, desired)
+	if desiredRecorder.Code != http.StatusOK {
+		t.Fatalf("desired status = %d, want %d; body=%s", desiredRecorder.Code, http.StatusOK, desiredRecorder.Body.String())
+	}
+	var body struct {
+		Resources []resourceResponse `json:"resources"`
+	}
+	if err := json.Unmarshal(desiredRecorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal() error = %v; body=%s", err, desiredRecorder.Body.String())
+	}
+	if len(body.Resources) != 0 {
+		t.Fatalf("resources = %+v, want deleted package omitted", body.Resources)
 	}
 }
 

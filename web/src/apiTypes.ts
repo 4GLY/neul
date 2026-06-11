@@ -45,6 +45,7 @@ export type ApiResource = {
 	readonly agentSupport: "supported" | "unsupported";
 	readonly spec: Readonly<Record<string, unknown>> & {
 		readonly desiredVersion?: unknown;
+		readonly sourceKind?: unknown;
 	};
 };
 

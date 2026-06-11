@@ -113,6 +113,102 @@ func segmentIDByName(r *http.Request, db *sql.DB, segmentName string) (string, e
 	return segmentID, nil
 }
 
+func markResourcePendingForMachines(r *http.Request, db *sql.DB, clock func() time.Time, resource resourceResponse) error {
+	rows, err := db.QueryContext(r.Context(), `SELECT id FROM machines ORDER BY id ASC`)
+	if err != nil {
+		return fmt.Errorf("query machines for pending resource: %w", err)
+	}
+	defer rows.Close()
+	machineIDs := make([]string, 0)
+	for rows.Next() {
+		var machineID string
+		if err := rows.Scan(&machineID); err != nil {
+			return fmt.Errorf("scan pending machine: %w", err)
+		}
+		machineIDs = append(machineIDs, machineID)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pending machines: %w", err)
+	}
+	now := clock().UTC().Format(time.RFC3339Nano)
+	for _, machineID := range machineIDs {
+		key := fmt.Sprintf("desired-state-%s-%s-%d", machineID, resource.ID, resource.DesiredVersion)
+		runID := "run_" + hashSecret(key)[:16]
+		if _, err := db.ExecContext(
+			r.Context(),
+			`INSERT OR IGNORE INTO reconcile_runs (id, machine_id, reason, idempotency_key, status, created_at) VALUES (?, ?, 'desired_state_changed', ?, 'reported', ?)`,
+			runID,
+			machineID,
+			key,
+			now,
+		); err != nil {
+			return fmt.Errorf("insert pending run: %w", err)
+		}
+		if _, err := db.ExecContext(
+			r.Context(),
+			`INSERT OR IGNORE INTO reconcile_events (id, run_id, resource_id, status, message, desired_version, applied_version, created_at) VALUES (?, ?, ?, 'pending', 'desired state changed', ?, 0, ?)`,
+			"event_"+hashSecret(key)[:16],
+			runID,
+			resource.ID,
+			resource.DesiredVersion,
+			now,
+		); err != nil {
+			return fmt.Errorf("insert pending event: %w", err)
+		}
+	}
+	return nil
+}
+
+func markExistingResourcesPendingForMachine(r *http.Request, tx *sql.Tx, machineID string, now time.Time) error {
+	rows, err := tx.QueryContext(r.Context(), `SELECT id, desired_version FROM resources WHERE kind != 'secret' ORDER BY id ASC`)
+	if err != nil {
+		return fmt.Errorf("query resources for pending machine: %w", err)
+	}
+	defer rows.Close()
+	type pendingResource struct {
+		id             string
+		desiredVersion int
+	}
+	resources := make([]pendingResource, 0)
+	for rows.Next() {
+		var resource pendingResource
+		if err := rows.Scan(&resource.id, &resource.desiredVersion); err != nil {
+			return fmt.Errorf("scan pending resource: %w", err)
+		}
+		resources = append(resources, resource)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate pending resources: %w", err)
+	}
+	createdAt := now.UTC().Format(time.RFC3339Nano)
+	for _, resource := range resources {
+		key := fmt.Sprintf("desired-state-%s-%s-%d", machineID, resource.id, resource.desiredVersion)
+		runID := "run_" + hashSecret(key)[:16]
+		if _, err := tx.ExecContext(
+			r.Context(),
+			`INSERT OR IGNORE INTO reconcile_runs (id, machine_id, reason, idempotency_key, status, created_at) VALUES (?, ?, 'desired_state_changed', ?, 'reported', ?)`,
+			runID,
+			machineID,
+			key,
+			createdAt,
+		); err != nil {
+			return fmt.Errorf("insert pending machine run: %w", err)
+		}
+		if _, err := tx.ExecContext(
+			r.Context(),
+			`INSERT OR IGNORE INTO reconcile_events (id, run_id, resource_id, status, message, desired_version, applied_version, created_at) VALUES (?, ?, ?, 'pending', 'desired state changed', ?, 0, ?)`,
+			"event_"+hashSecret(key)[:16],
+			runID,
+			resource.id,
+			resource.desiredVersion,
+			createdAt,
+		); err != nil {
+			return fmt.Errorf("insert pending machine event: %w", err)
+		}
+	}
+	return nil
+}
+
 func agentSupport(resource resourceResponse) string {
 	if resource.Kind != string(domain.ResourceKindPackage) {
 		return "supported"

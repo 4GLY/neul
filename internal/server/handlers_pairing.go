@@ -96,6 +96,10 @@ func handlePairClaim(db *sql.DB, clock func() time.Time) http.HandlerFunc {
 			writeJSONError(w, http.StatusInternalServerError, "machine_create_failed", "Could not create machine.")
 			return
 		}
+		if err := markExistingResourcesPendingForMachine(r, tx, machineID, now); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "machine_pending_failed", "Could not mark machine pending.")
+			return
+		}
 		_, err = tx.ExecContext(
 			r.Context(),
 			`UPDATE pairing_codes SET used_at = ?, machine_id = ? WHERE id = ?`,

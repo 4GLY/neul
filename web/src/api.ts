@@ -15,16 +15,17 @@ import {
 import type { Activity, Machine, ResourceRow } from "./types";
 
 export {
+	createDotfileResource,
+	createPackageResource,
+	deleteResource,
+	updatePackageResource,
+} from "./apiResources";
+export {
 	createLocalSession,
 	LocalSessionError,
 	OwnerSessionRequiredError,
 } from "./localSession";
-export {
-	createDotfileResource,
-	createPackageResource,
-	deleteResource,
-	updateResource,
-} from "./resourceApi";
+export { updateResource } from "./resourceApi";
 
 export type DashboardData = {
 	readonly metrics: DashboardMetrics;
@@ -174,16 +175,33 @@ function mapMachine(machine: ApiDashboard["machines"][number]): Machine {
 }
 
 function mapResource(resource: ApiResource): ResourceRow {
-	const group = resource.kind === "package" ? "패키지" : "dotfile";
+	const group: ResourceRow["group"] =
+		resource.kind === "package" ? "패키지" : "dotfile";
 	const desired =
 		typeof resource.spec.desiredVersion === "string"
 			? resource.spec.desiredVersion
 			: `v${resource.desiredVersion}`;
-	return {
+	const base: ResourceRow = {
 		group,
+		id: resource.id,
+		kind: resource.kind,
 		name: resource.name,
 		desired,
 	};
+	const sourceKind = packageSourceKind(resource.spec.sourceKind);
+	if (sourceKind === undefined) {
+		return base;
+	}
+	return { ...base, sourceKind };
+}
+
+function packageSourceKind(
+	value: unknown,
+): "brew" | "apt" | "mise" | undefined {
+	if (value === "brew" || value === "apt" || value === "mise") {
+		return value;
+	}
+	return undefined;
 }
 
 function mapActivities(_dashboard: ApiDashboard): readonly Activity[] {

@@ -49,6 +49,10 @@ func handleCreatePackageResource(db *sql.DB, clock func() time.Time) http.Handle
 			writeJSONError(w, http.StatusInternalServerError, "resource_create_failed", "Could not create package resource.")
 			return
 		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
+			return
+		}
 		writeJSON(w, http.StatusCreated, resource)
 	})
 }
@@ -88,6 +92,10 @@ func handleCreateDotfileResource(db *sql.DB, clock func() time.Time, homeDir str
 			writeJSONError(w, http.StatusInternalServerError, "resource_create_failed", "Could not create dotfile resource.")
 			return
 		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
+			return
+		}
 		writeJSON(w, http.StatusCreated, resource)
 	})
 }
@@ -114,6 +122,7 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 			writeJSONError(w, http.StatusNotFound, "resource_not_found", "Resource was not found.")
 			return
 		}
+		nextName := ""
 		if kind == string(domain.ResourceKindDotfile) {
 			patch, err = normalizeDotfilePatch(r, tx, resourceID, patch, homeDir)
 			if err != nil {
@@ -128,13 +137,25 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
 				return
 			}
+			nextName = stringSpecValue(patch, "path")
+		} else {
+			current, err := queryResourceByID(r, tx, resourceID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
+				return
+			}
+			patch, nextName, err = mergeResourcePatch(homeDir, current, patch)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
+				return
+			}
 		}
 		specJSON, err := json.Marshal(patch)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
 			return
 		}
-		result, err := updatePatchedResource(r, tx, resourceID, kind, string(specJSON), stringSpecValue(patch, "path"), now)
+		result, err := updatePatchedResource(r, tx, resourceID, string(specJSON), nextName, now)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "resource_update_failed", "Could not update resource.")
 			return
@@ -159,6 +180,10 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 			writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
 			return
 		}
+		if err := markResourcePendingForMachines(r, db, clock, resource); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "resource_pending_failed", "Could not mark resource pending.")
+			return
+		}
 		writeJSON(w, http.StatusOK, resource)
 	})
 }
@@ -179,26 +204,13 @@ func handleDeleteResource(db *sql.DB) http.Handler {
 	})
 }
 
-func updatePatchedResource(r *http.Request, tx *sql.Tx, resourceID string, kind string, specJSON string, dotfilePath string, updatedAt string) (sql.Result, error) {
-	if kind == string(domain.ResourceKindDotfile) {
-		return tx.ExecContext(
-			r.Context(),
-			`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
-			dotfilePath,
-			specJSON,
-			updatedAt,
-			resourceID,
-		)
-	}
+func updatePatchedResource(r *http.Request, tx *sql.Tx, resourceID string, specJSON string, name string, updatedAt string) (sql.Result, error) {
 	return tx.ExecContext(
 		r.Context(),
-		`UPDATE resources SET spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+		`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+		name,
 		specJSON,
 		updatedAt,
 		resourceID,
 	)
-}
-
-func validPackageSource(sourceKind string) bool {
-	return sourceKind == "brew" || sourceKind == "apt" || sourceKind == "mise"
 }

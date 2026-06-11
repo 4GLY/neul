@@ -42,8 +42,11 @@ export type Activity = {
 
 export type ResourceRow = {
 	readonly group: "패키지" | "dotfile" | "secret";
+	readonly id: string;
+	readonly kind: "package" | "dotfile" | "secret";
 	readonly name: string;
 	readonly desired: string;
+	readonly sourceKind?: "brew" | "apt" | "mise";
 };
 
 export type NavItem = {
