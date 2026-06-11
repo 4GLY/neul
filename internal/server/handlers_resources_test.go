@@ -257,6 +257,52 @@ func TestDotfileResource_patchCanClearContent(t *testing.T) {
 	}
 }
 
+func TestDotfileResource_patchToNewPathUpdatesResourceName(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	clockTick := 0
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouterWithConfig(t, Config{
+		DB: db,
+		Clock: func() time.Time {
+			clockTick++
+			return now.Add(time.Duration(clockTick) * time.Second)
+		},
+		HomeDir: t.TempDir(),
+	})
+	resourceID := createDotfileResource(t, router, cookie, `{"path":"~/.zshrc","content":"x","mode":"0644","applyMode":"copy","targetSegment":"base"}`)
+
+	patch := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/resources/"+resourceID,
+		strings.NewReader(`{"path":"~/.gitconfig","content":"x","mode":"0644","applyMode":"copy","targetSegment":"base"}`),
+	)
+	patch.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, patch)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var patched struct {
+		Name string            `json:"name"`
+		Spec map[string]string `json:"spec"`
+	}
+	decodeJSONResponse(t, recorder, &patched)
+	if patched.Name != "~/.gitconfig" {
+		t.Fatalf("name = %q, want %q", patched.Name, "~/.gitconfig")
+	}
+	if patched.Spec["path"] != "~/.gitconfig" {
+		t.Fatalf("spec path = %q, want %q", patched.Spec["path"], "~/.gitconfig")
+	}
+	var storedName string
+	if err := db.QueryRowContext(context.Background(), `SELECT name FROM resources WHERE id = ?`, resourceID).Scan(&storedName); err != nil {
+		t.Fatalf("query resource name error = %v", err)
+	}
+	if storedName != "~/.gitconfig" {
+		t.Fatalf("stored name = %q, want %q", storedName, "~/.gitconfig")
+	}
+}
+
 func TestResources_rejectDotfilePatchWithInvalidModeOrApplyMode(t *testing.T) {
 	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
 	db := openServerTestDB(t)

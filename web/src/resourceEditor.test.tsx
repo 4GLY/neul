@@ -1,8 +1,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ResourceEditor } from "./ResourceEditor";
 import type { ApiResource } from "./apiTypes";
+import { ResourceEditor } from "./ResourceEditor";
 
 describe("ResourceEditor", () => {
 	afterEach(() => {

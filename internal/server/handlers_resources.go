@@ -134,13 +134,7 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
 			return
 		}
-		result, err := tx.ExecContext(
-			r.Context(),
-			`UPDATE resources SET spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
-			string(specJSON),
-			now,
-			resourceID,
-		)
+		result, err := updatePatchedResource(r, tx, resourceID, kind, string(specJSON), stringSpecValue(patch, "path"), now)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "resource_update_failed", "Could not update resource.")
 			return
@@ -183,6 +177,26 @@ func handleDeleteResource(db *sql.DB) http.Handler {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+func updatePatchedResource(r *http.Request, tx *sql.Tx, resourceID string, kind string, specJSON string, dotfilePath string, updatedAt string) (sql.Result, error) {
+	if kind == string(domain.ResourceKindDotfile) {
+		return tx.ExecContext(
+			r.Context(),
+			`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+			dotfilePath,
+			specJSON,
+			updatedAt,
+			resourceID,
+		)
+	}
+	return tx.ExecContext(
+		r.Context(),
+		`UPDATE resources SET spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+		specJSON,
+		updatedAt,
+		resourceID,
+	)
 }
 
 func validPackageSource(sourceKind string) bool {
