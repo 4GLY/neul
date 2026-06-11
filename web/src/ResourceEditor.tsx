@@ -1,19 +1,20 @@
 import type { FormEvent, ReactElement } from "react";
 import { useState } from "react";
 import {
-	createDotfileResource,
 	createPackageResource,
 	deleteResource,
 	OwnerSessionRequiredError,
 	updatePackageResource,
 } from "./api";
+import type { ApiResource } from "./apiTypes";
+import { DotfileResourceEditor } from "./DotfileResourceEditor";
 import { PackageResourceList } from "./PackageResourceList";
 import type { ResourceRow } from "./types";
 
 type ResourceEditorProps = {
 	readonly onOwnerSessionRequired?: () => void;
 	readonly onSaved: () => void;
-	readonly resources?: readonly ResourceRow[];
+	readonly resources?: readonly ApiResource[];
 };
 
 export function ResourceEditor({
@@ -26,10 +27,11 @@ export function ResourceEditor({
 	const [packageName, setPackageName] = useState("");
 	const [sourceKind, setSourceKind] = useState<"brew" | "apt" | "mise">("brew");
 	const [packageVersion, setPackageVersion] = useState("latest");
-	const [dotfilePath, setDotfilePath] = useState("~/.zshrc");
-	const [dotfileContent, setDotfileContent] = useState("");
 	const [message, setMessage] = useState("");
 	const [isSaving, setIsSaving] = useState(false);
+	const packageResources = resources.flatMap((resource) =>
+		toPackageResourceRow(resource),
+	);
 
 	async function handlePackageSubmit(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
@@ -48,34 +50,6 @@ export function ResourceEditor({
 			}
 			setMessage("저장했습니다");
 			resetPackageEdit();
-			onSaved();
-		} catch (error) {
-			if (error instanceof OwnerSessionRequiredError) {
-				onOwnerSessionRequired?.();
-				return;
-			}
-			setMessage(
-				error instanceof Error ? error.message : "저장하지 못했습니다",
-			);
-		} finally {
-			setIsSaving(false);
-		}
-	}
-
-	async function handleDotfileSubmit(event: FormEvent<HTMLFormElement>) {
-		event.preventDefault();
-		setIsSaving(true);
-		setMessage("");
-		try {
-			await createDotfileResource({
-				path: dotfilePath,
-				content: dotfileContent,
-				mode: "0644",
-				applyMode: "copy",
-				targetSegment: "base",
-			});
-			setMessage("저장했습니다");
-			setEditingResourceId("");
 			onSaved();
 		} catch (error) {
 			if (error instanceof OwnerSessionRequiredError) {
@@ -131,7 +105,6 @@ export function ResourceEditor({
 		setSourceKind("brew");
 		setPackageVersion("latest");
 	}
-
 	return (
 		<section className="resource-editor">
 			<header>
@@ -167,6 +140,7 @@ export function ResourceEditor({
 							aria-label="Package name"
 							value={packageName}
 							onChange={(event) => setPackageName(event.target.value)}
+							onInput={(event) => setPackageName(event.currentTarget.value)}
 						/>
 					</label>
 					<label>
@@ -189,6 +163,7 @@ export function ResourceEditor({
 							aria-label="Package version"
 							value={packageVersion}
 							onChange={(event) => setPackageVersion(event.target.value)}
+							onInput={(event) => setPackageVersion(event.currentTarget.value)}
 						/>
 					</label>
 					<button className="primary-button" type="submit" disabled={isSaving}>
@@ -205,34 +180,23 @@ export function ResourceEditor({
 						</button>
 					)}
 					<PackageResourceList
-						resources={resources}
+						resources={packageResources}
 						isSaving={isSaving}
 						onDelete={handleDeletePackage}
 						onEdit={startPackageEdit}
 					/>
 				</form>
 			) : (
-				<form className="editor-form" onSubmit={handleDotfileSubmit}>
-					<label>
-						<span>Dotfile path</span>
-						<input
-							aria-label="Dotfile path"
-							value={dotfilePath}
-							onChange={(event) => setDotfilePath(event.target.value)}
-						/>
-					</label>
-					<label>
-						<span>Dotfile content</span>
-						<textarea
-							aria-label="Dotfile content"
-							value={dotfileContent}
-							onChange={(event) => setDotfileContent(event.target.value)}
-						/>
-					</label>
-					<button className="primary-button" type="submit" disabled={isSaving}>
-						Save dotfile
-					</button>
-				</form>
+				<DotfileResourceEditor
+					isSaving={isSaving}
+					resources={resources}
+					onMessageChange={setMessage}
+					onSaved={onSaved}
+					onSavingChange={setIsSaving}
+					{...(onOwnerSessionRequired === undefined
+						? {}
+						: { onOwnerSessionRequired })}
+				/>
 			)}
 			{message === "" ? null : <p className="editor-message">{message}</p>}
 		</section>
@@ -244,4 +208,27 @@ function parsePackageSource(value: string): "brew" | "apt" | "mise" {
 		return value;
 	}
 	return "brew";
+}
+
+function toPackageResourceRow(resource: ApiResource): readonly ResourceRow[] {
+	if (resource.kind !== "package") {
+		return [];
+	}
+	const sourceKind = parsePackageSource(
+		String(resource.spec.sourceKind ?? "brew"),
+	);
+	const desired =
+		typeof resource.spec.desiredVersion === "string"
+			? resource.spec.desiredVersion
+			: `v${resource.desiredVersion}`;
+	return [
+		{
+			desired,
+			group: "패키지",
+			id: resource.id,
+			kind: "package",
+			name: resource.name,
+			sourceKind,
+		},
+	];
 }

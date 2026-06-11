@@ -173,7 +173,7 @@ export function DashboardWorkspace({
 						) : null}
 						{editorOpen ? (
 							<ResourceEditor
-								resources={resources}
+								resources={dashboard?.resourceRecords ?? []}
 								onOwnerSessionRequired={onOwnerSessionRequired}
 								onSaved={onResourceSaved}
 							/>
@@ -209,7 +209,7 @@ export function DashboardWorkspace({
 						) : (
 							<MachineInspector
 								machine={selectedMachine}
-								events={events}
+								events={events ?? []}
 								onRepairDrift={onRepairDrift}
 								onOpenLogs={onOpenLogs}
 							/>

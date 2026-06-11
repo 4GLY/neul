@@ -47,16 +47,7 @@ func insertResource(r *http.Request, db *sql.DB, clock func() time.Time, segment
 		return resourceResponse{}, fmt.Errorf("insert resource: %w", err)
 	}
 	if kind == string(domain.ResourceKindDotfile) {
-		_, err = db.ExecContext(
-			r.Context(),
-			`INSERT INTO file_versions (id, resource_id, content_hash, content, created_at) VALUES (?, ?, ?, ?, ?)`,
-			"file_version_"+hashSecret(resourceID + spec["content"])[:16],
-			resourceID,
-			hashSecret(spec["content"]),
-			spec["content"],
-			now,
-		)
-		if err != nil {
+		if err := insertFileVersion(r, db, resourceID, spec["content"], now); err != nil {
 			return resourceResponse{}, fmt.Errorf("insert file version: %w", err)
 		}
 	}
@@ -87,8 +78,8 @@ func queryResources(r *http.Request, db *sql.DB) ([]resourceResponse, error) {
 	return resources, nil
 }
 
-func queryResourceByID(r *http.Request, db *sql.DB, resourceID string) (resourceResponse, error) {
-	row := db.QueryRowContext(
+func queryResourceByID(r *http.Request, queryer resourceQueryer, resourceID string) (resourceResponse, error) {
+	row := queryer.QueryRowContext(
 		r.Context(),
 		`SELECT id, kind, name, spec_json, desired_version, created_at, updated_at FROM resources WHERE id = ?`,
 		resourceID,

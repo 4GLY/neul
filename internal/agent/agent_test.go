@@ -90,6 +90,47 @@ func TestCommandPolling_unknownCommandReportsUnsupportedAndDoesNotExecute(t *tes
 	}
 }
 
+func TestAgentTick_reportsDotfileDesiredState(t *testing.T) {
+	var reportBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/agent/heartbeat":
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/agent/desired-state":
+			_, _ = w.Write([]byte(`{"resources":[{"id":"resource_dot_zshrc","kind":"dotfile","name":"~/.zshrc","desiredVersion":2,"spec":{"path":"~/.zshrc","content":"export NEUL=v2\n","mode":"0600","applyMode":"symlink","targetSegment":"base"}}]}`))
+		case "/api/agent/drift-report":
+			body, err := readAllString(r)
+			if err != nil {
+				t.Fatalf("read drift report error = %v", err)
+			}
+			reportBody = body
+			w.WriteHeader(http.StatusAccepted)
+		case "/api/agent/commands":
+			_, _ = w.Write([]byte(`{"commands":[]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := New(Config{ServerURL: server.URL, MachineID: "machine_dot", MachineToken: "mtn_secret"})
+	if err := client.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+	for _, expected := range []string{
+		`"resourceId":"resource_dot_zshrc"`,
+		`"status":"in_sync"`,
+		`"message":"dotfile dry run"`,
+		`"desiredVersion":2`,
+		`"appliedVersion":2`,
+	} {
+		if !strings.Contains(reportBody, expected) {
+			t.Fatalf("report body = %s, missing %s", reportBody, expected)
+		}
+	}
+}
+
 func TestAgentTick_defaultHeartbeatIntervalIsThirtySeconds(t *testing.T) {
 	config := DefaultConfig()
 	if config.HeartbeatInterval != 30*time.Second {

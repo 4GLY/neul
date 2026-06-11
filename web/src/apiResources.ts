@@ -73,5 +73,8 @@ async function handleResourceWriteError(response: Response): Promise<never> {
 	if (code === "path_not_allowed") {
 		throw new Error("경로를 사용할 수 없습니다");
 	}
+	if (code === "dotfile_invalid") {
+		throw new Error("모드 또는 적용 방식이 올바르지 않습니다");
+	}
 	throw new Error("리소스를 저장하지 못했습니다");
 }

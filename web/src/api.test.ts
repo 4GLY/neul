@@ -432,6 +432,150 @@ describe("package desired-state mutations", () => {
 	});
 });
 
+describe("resource mutation API", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("sends dotfile updates as JSON PATCH requests", async () => {
+		const api = await loadUpdateResourceApi();
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+			readonly contentType: string | null;
+			readonly body: BodyInit | null | undefined;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({
+					url: String(input),
+					method: init?.method,
+					contentType: new Headers(init?.headers).get("Content-Type"),
+					body: init?.body,
+				});
+				return jsonResponse({
+					id: "resource_dot_zshrc",
+					kind: "dotfile",
+					name: "~/.zshrc",
+					desiredVersion: 2,
+					agentSupport: "supported",
+					spec: {
+						path: "~/.zshrc",
+						content: "export EDITOR=nvim\n",
+						mode: "0600",
+						applyMode: "symlink",
+						targetSegment: "base",
+					},
+				});
+			},
+		);
+
+		await api.updateResource("resource_dot_zshrc", {
+			path: "~/.zshrc",
+			content: "export EDITOR=nvim\n",
+			mode: "0600",
+			applyMode: "symlink",
+			targetSegment: "base",
+		});
+
+		expect(calls).toEqual([
+			{
+				url: "/api/resources/resource_dot_zshrc",
+				method: "PATCH",
+				contentType: "application/json",
+				body: JSON.stringify({
+					path: "~/.zshrc",
+					content: "export EDITOR=nvim\n",
+					mode: "0600",
+					applyMode: "symlink",
+					targetSegment: "base",
+				}),
+			},
+		]);
+	});
+
+	it("maps path_not_allowed update failures to a Korean path error", async () => {
+		const api = await loadUpdateResourceApi();
+		vi.stubGlobal("fetch", async () =>
+			jsonResponse(
+				{
+					error: {
+						code: "path_not_allowed",
+						message: "Dotfile path is not allowed.",
+					},
+				},
+				400,
+			),
+		);
+
+		await expect(
+			api.updateResource("resource_dot_zshrc", {
+				path: "/etc/hosts",
+				content: "x",
+				mode: "0644",
+				applyMode: "copy",
+				targetSegment: "base",
+			}),
+		).rejects.toThrow("경로를 사용할 수 없습니다");
+	});
+
+	it("maps dotfile_invalid update failures to a Korean validation error", async () => {
+		const api = await loadUpdateResourceApi();
+		vi.stubGlobal("fetch", async () =>
+			jsonResponse(
+				{
+					error: {
+						code: "dotfile_invalid",
+						message: "Dotfile patch is invalid.",
+					},
+				},
+				400,
+			),
+		);
+
+		await expect(
+			api.updateResource("resource_dot_zshrc", {
+				path: "~/.zshrc",
+				content: "x",
+				mode: "9999",
+				applyMode: "copy",
+				targetSegment: "base",
+			}),
+		).rejects.toThrow("모드 또는 적용 방식이 올바르지 않습니다");
+	});
+
+	it("sends resource deletes to the resource endpoint", async () => {
+		const api = await loadDeleteResourceApi();
+		const calls: {
+			readonly url: string;
+			readonly method: string | undefined;
+			readonly body: BodyInit | null | undefined;
+		}[] = [];
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				calls.push({
+					url: String(input),
+					method: init?.method,
+					body: init?.body,
+				});
+				return new Response(null, { status: 204 });
+			},
+		);
+
+		await api.deleteResource("resource_dot_zshrc");
+
+		expect(calls).toEqual([
+			{
+				url: "/api/resources/resource_dot_zshrc",
+				method: "DELETE",
+				body: undefined,
+			},
+		]);
+	});
+});
+
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -449,5 +593,56 @@ function stubUnauthorized(): void {
 				}),
 				{ status: 401, headers: { "Content-Type": "application/json" } },
 			),
+	);
+}
+
+type DotfileUpdateInput = {
+	readonly path: string;
+	readonly content: string;
+	readonly mode: string;
+	readonly applyMode: "copy" | "symlink";
+	readonly targetSegment: string;
+};
+
+type UpdateResourceApi = {
+	readonly updateResource: (
+		id: string,
+		input: DotfileUpdateInput,
+	) => Promise<unknown>;
+};
+
+type DeleteResourceApi = {
+	readonly deleteResource: (id: string) => Promise<void>;
+};
+
+async function loadUpdateResourceApi(): Promise<UpdateResourceApi> {
+	const module = await import("./api");
+	if (!hasUpdateResource(module)) {
+		throw new Error("updateResource export missing");
+	}
+	return module;
+}
+
+async function loadDeleteResourceApi(): Promise<DeleteResourceApi> {
+	const module = await import("./api");
+	if (!hasDeleteResource(module)) {
+		throw new Error("deleteResource export missing");
+	}
+	return module;
+}
+
+function hasUpdateResource(
+	module: typeof import("./api"),
+): module is typeof import("./api") & UpdateResourceApi {
+	return (
+		"updateResource" in module && typeof module.updateResource === "function"
+	);
+}
+
+function hasDeleteResource(
+	module: typeof import("./api"),
+): module is typeof import("./api") & DeleteResourceApi {
+	return (
+		"deleteResource" in module && typeof module.deleteResource === "function"
 	);
 }

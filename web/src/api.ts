@@ -25,11 +25,13 @@ export {
 	LocalSessionError,
 	OwnerSessionRequiredError,
 } from "./localSession";
+export { updateResource } from "./resourceApi";
 
 export type DashboardData = {
 	readonly metrics: DashboardMetrics;
 	readonly machines: readonly Machine[];
 	readonly resources: readonly ResourceRow[];
+	readonly resourceRecords: ApiResources["resources"];
 	readonly activities: readonly Activity[];
 	readonly emptyStateAction?: string;
 };
@@ -75,6 +77,7 @@ export async function loadDashboardData(): Promise<DashboardData> {
 		metrics: mapMetrics(dashboard.metrics, machines.length),
 		machines,
 		resources: resources.resources.map(mapResource),
+		resourceRecords: resources.resources,
 		activities: mapActivities(dashboard),
 	};
 	if (dashboard.emptyState?.action !== undefined) {

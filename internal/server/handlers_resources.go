@@ -4,11 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/4gly/neul/internal/domain"
@@ -80,7 +76,7 @@ func handleCreateDotfileResource(db *sql.DB, clock func() time.Time, homeDir str
 			writeJSONError(w, http.StatusBadRequest, "path_not_allowed", "Dotfile path is not allowed.")
 			return
 		}
-		if body.Mode == "" || body.ApplyMode == "" || body.TargetSegment == "" {
+		if err := validateDotfileSpec(body.Mode, body.ApplyMode, body.TargetSegment); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "dotfile_invalid", "Dotfile mode, apply mode, and segment are required.")
 			return
 		}
@@ -112,34 +108,54 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 			writeJSONError(w, http.StatusBadRequest, "bad_json", "Request body must be JSON.")
 			return
 		}
-		current, err := queryResourceByID(r, db, resourceID)
+		now := clock().UTC().Format(time.RFC3339Nano)
+		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
-				return
-			}
+			writeJSONError(w, http.StatusInternalServerError, "transaction_failed", "Could not update resource.")
+			return
+		}
+		defer func() {
+			_ = tx.Rollback()
+		}()
+		kind, err := resourceKindByID(r, tx, resourceID)
+		if err != nil {
 			writeJSONError(w, http.StatusNotFound, "resource_not_found", "Resource was not found.")
 			return
 		}
-		nextSpec, nextName, err := mergeResourcePatch(homeDir, current, patch)
+		nextName := ""
+		if kind == string(domain.ResourceKindDotfile) {
+			patch, err = normalizeDotfilePatch(r, tx, resourceID, patch, homeDir)
+			if err != nil {
+				if errors.Is(err, errDotfilePathNotAllowed) {
+					writeJSONError(w, http.StatusBadRequest, "path_not_allowed", "Dotfile path is not allowed.")
+					return
+				}
+				if errors.Is(err, errDotfileInvalid) {
+					writeJSONError(w, http.StatusBadRequest, "dotfile_invalid", "Dotfile patch is invalid.")
+					return
+				}
+				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
+				return
+			}
+			nextName = stringSpecValue(patch, "path")
+		} else {
+			current, err := queryResourceByID(r, tx, resourceID)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "resource_query_failed", "Could not read resource.")
+				return
+			}
+			patch, nextName, err = mergeResourcePatch(homeDir, current, patch)
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
+				return
+			}
+		}
+		specJSON, err := json.Marshal(patch)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
 			return
 		}
-		specJSON, err := json.Marshal(nextSpec)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "resource_patch_invalid", "Resource patch is invalid.")
-			return
-		}
-		now := clock().UTC().Format(time.RFC3339Nano)
-		result, err := db.ExecContext(
-			r.Context(),
-			`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
-			nextName,
-			string(specJSON),
-			now,
-			resourceID,
-		)
+		result, err := updatePatchedResource(r, tx, resourceID, string(specJSON), nextName, now)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "resource_update_failed", "Could not update resource.")
 			return
@@ -147,6 +163,16 @@ func handlePatchResource(db *sql.DB, clock func() time.Time, homeDir string) htt
 		affected, err := result.RowsAffected()
 		if err != nil || affected != 1 {
 			writeJSONError(w, http.StatusNotFound, "resource_not_found", "Resource was not found.")
+			return
+		}
+		if kind == string(domain.ResourceKindDotfile) {
+			if err := insertFileVersion(r, tx, resourceID, stringSpecValue(patch, "content"), now); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "resource_update_failed", "Could not update resource.")
+				return
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "transaction_failed", "Could not update resource.")
 			return
 		}
 		resource, err := queryResourceByID(r, db, resourceID)
@@ -178,71 +204,13 @@ func handleDeleteResource(db *sql.DB) http.Handler {
 	})
 }
 
-func normalizeAllowedDotfilePath(homeDir string, rawPath string) (string, error) {
-	if homeDir == "" || rawPath == "" || filepath.IsAbs(rawPath) {
-		return "", fmt.Errorf("path not allowed")
-	}
-	if strings.Contains(rawPath, "..") {
-		return "", fmt.Errorf("path traversal")
-	}
-	if rawPath != "~/.zshrc" && rawPath != "~/.gitconfig" && !strings.HasPrefix(rawPath, "~/.config/") {
-		return "", fmt.Errorf("path not allowlisted")
-	}
-	relative := strings.TrimPrefix(rawPath, "~/")
-	cleanRelative := filepath.Clean(relative)
-	if cleanRelative == "." || strings.HasPrefix(cleanRelative, ".."+string(filepath.Separator)) || cleanRelative == ".." {
-		return "", fmt.Errorf("path traversal")
-	}
-	if cleanRelative != ".zshrc" && cleanRelative != ".gitconfig" && !strings.HasPrefix(cleanRelative, ".config"+string(filepath.Separator)) {
-		return "", fmt.Errorf("path not allowlisted")
-	}
-	absoluteHome, err := filepath.Abs(homeDir)
-	if err != nil {
-		return "", fmt.Errorf("home path invalid: %w", err)
-	}
-	absoluteTarget := filepath.Join(absoluteHome, cleanRelative)
-	if err := rejectExistingSymlinkEscape(absoluteHome, absoluteTarget); err != nil {
-		return "", err
-	}
-	return "~/" + filepath.ToSlash(cleanRelative), nil
-}
-
-func rejectExistingSymlinkEscape(homeDir string, targetPath string) error {
-	current := homeDir
-	relative, err := filepath.Rel(homeDir, targetPath)
-	if err != nil {
-		return fmt.Errorf("path rel: %w", err)
-	}
-	for _, part := range strings.Split(relative, string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return fmt.Errorf("lstat path: %w", err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(current)
-		if err != nil {
-			return fmt.Errorf("eval symlink: %w", err)
-		}
-		if !pathInside(homeDir, resolved) {
-			return fmt.Errorf("symlink escape")
-		}
-	}
-	return nil
-}
-
-func pathInside(root string, candidate string) bool {
-	relative, err := filepath.Rel(root, candidate)
-	if err != nil {
-		return false
-	}
-	return relative == "." || (!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != "..")
+func updatePatchedResource(r *http.Request, tx *sql.Tx, resourceID string, specJSON string, name string, updatedAt string) (sql.Result, error) {
+	return tx.ExecContext(
+		r.Context(),
+		`UPDATE resources SET name = ?, spec_json = ?, desired_version = desired_version + 1, updated_at = ? WHERE id = ?`,
+		name,
+		specJSON,
+		updatedAt,
+		resourceID,
+	)
 }
