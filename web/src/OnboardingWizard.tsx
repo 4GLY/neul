@@ -144,11 +144,18 @@ export function OnboardingWizard({
 		};
 	}, [onConnected, onOwnerSessionRequired, state]);
 
-	const command = useMemo(() => {
+	const primaryCommand = useMemo(() => {
 		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
 			return "";
 		}
 		return `neul enroll --server ${window.location.origin}`;
+	}, [state]);
+
+	const fallbackCommand = useMemo(() => {
+		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
+			return "";
+		}
+		return `go run ./cmd/neul agent enroll --server ${window.location.origin} --pair ${state.invite.code} --connect-once`;
 	}, [state]);
 
 	if (state.kind === "creating") {
@@ -170,7 +177,9 @@ export function OnboardingWizard({
 					))}
 				</ul>
 				<p>{copy.onboarding.checkoutHint}</p>
-				<code>{command}</code>
+				<code>{primaryCommand}</code>
+				<p>{copy.onboarding.fallbackHint}</p>
+				<code>{fallbackCommand}</code>
 				<div className="actions">
 					<button className="secondary-button" type="button" onClick={onClose}>
 						취소

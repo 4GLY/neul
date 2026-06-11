@@ -60,15 +60,18 @@ headless/SSH 환경에서만 device code를 보여준다.
 
 Approval API and package artifacts are target contract for the packaged-client
 implementation. Until they ship, executable local QA uses only the
-fallback/debug path below.
+fallback/debug path below, and the wizard exposes that command separately from
+the primary packaged-client command.
 
 <!-- packaged-primary:end -->
 
 fallback/debug path:
 
 개발자나 QA가 packaged binary 없이 로컬 checkout에서 검증할 때만 기존
-copyable command를 사용한다. 이 경로는 primary UX가 아니며 README와 QA
-문서의 fallback/debug 섹션에만 둔다.
+copyable command를 사용한다. packaged approval flow가 구현되기 전까지 웹
+wizard도 이 명령을 fallback/debug로 별도 표시해 첫 사용자가 실제로 machine을
+claim하고 heartbeat까지 진행할 수 있게 한다. 이 경로는 primary UX가 아니며
+`Run with packaged neul client:` 명령과 분리한다.
 
 이 iteration에는 no /install.sh, no `curl | sh`, no native GUI, no hosted
 login, no WebSocket을 유지한다.

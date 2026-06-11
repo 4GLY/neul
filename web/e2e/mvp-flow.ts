@@ -24,12 +24,13 @@ export async function visibleOnboardMachine(
 	fixture: ServerFixture,
 ): Promise<EnrolledMachine> {
 	await page.goto(fixture.baseURL);
-	const pairInit = page.waitForResponse((response) =>
-		response.url().endsWith("/api/pair/init"),
-	);
 	await page.getByRole("button", { name: "첫 머신 등록" }).click();
-	const pair = (await (await pairInit).json()) as { readonly code: string };
 	await page.getByText("Run with packaged neul client:").waitFor();
+	await page
+		.getByText(
+			"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
+		)
+		.waitFor();
 	const generated = await page.locator("code").first().textContent();
 	if (
 		generated === null ||
@@ -39,9 +40,17 @@ export async function visibleOnboardMachine(
 	) {
 		throw new Error(`generated command missing: ${generated}`);
 	}
+	const fallback = await page.locator("code").nth(1).textContent();
+	if (
+		fallback === null ||
+		!fallback.includes("go run ./cmd/neul agent enroll") ||
+		!fallback.includes("--pair") ||
+		!fallback.includes("--connect-once")
+	) {
+		throw new Error(`fallback command missing: ${fallback}`);
+	}
 	const configDir = join(fixture.tempDir, "agent-config");
 	mkdirSync(configDir, { recursive: true });
-	const fallback = createFallbackPairCommand(fixture, pair.code);
 	const command = buildEnrollCommand(fallback, configDir);
 	const invocation = buildEnrollmentShellInvocation(command);
 	const output = execFileSync(invocation.file, invocation.args, {
@@ -70,13 +79,6 @@ export async function visibleOnboardMachine(
 		configDir,
 		configPath,
 	};
-}
-
-function createFallbackPairCommand(
-	fixture: ServerFixture,
-	code: string,
-): string {
-	return `go run ./cmd/neul agent enroll --server ${fixture.baseURL} --pair ${code} --connect-once`;
 }
 
 export async function findResource(

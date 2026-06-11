@@ -16,6 +16,7 @@ describe("OnboardingWizard", () => {
 		]);
 
 		await renderWizard();
+		const commands = renderedCommands();
 
 		expect(calls[0]).toEqual({ url: "/api/pair/init", method: "POST" });
 		expect(document.body.textContent).toContain("명령 실행 대기 중");
@@ -29,11 +30,18 @@ describe("OnboardingWizard", () => {
 			"Run with packaged neul client:",
 		);
 		expect(document.body.textContent).toContain(
-			"neul enroll --server http://localhost:3000",
+			"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 		);
-		expect(document.body.textContent).not.toContain("pair_123");
-		expect(document.body.textContent).not.toContain("--pair");
-		expect(document.body.textContent).not.toContain("go run ./cmd/neul");
+		expect(commands).toEqual([
+			"neul enroll --server http://localhost:3000",
+			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
+		]);
+		expect(commands[0]).not.toContain("pair_123");
+		expect(commands[0]).not.toContain("--pair");
+		expect(commands[0]).not.toContain("go run ./cmd/neul");
+		expect(commands[1]).toContain("pair_123");
+		expect(commands[1]).toContain("--pair");
+		expect(commands[1]).toContain("go run ./cmd/neul");
 		expect(document.body.textContent).not.toContain("setup_");
 	});
 
@@ -162,6 +170,12 @@ async function renderWizard({
 	await act(async () => {
 		await Promise.resolve();
 	});
+}
+
+function renderedCommands(): string[] {
+	return Array.from(document.querySelectorAll("code")).map(
+		(element) => element.textContent ?? "",
+	);
 }
 
 async function advanceTimers(milliseconds: number): Promise<void> {

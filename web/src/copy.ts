@@ -48,6 +48,10 @@ export const onboardingCopy = {
 	],
 	checkoutHint: "Run with packaged neul client:",
 	commandTemplate: "neul enroll --server <origin>",
+	fallbackHint:
+		"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
+	fallbackCommandTemplate:
+		"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
 	security: {
 		pairTokenKind: "bearer",
 		neverStorePairTokenIn: [

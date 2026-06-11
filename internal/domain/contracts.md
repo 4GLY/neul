@@ -150,7 +150,10 @@ Fallback/debug checkout-local enrollment:
 
 Development and QA may still run
 `go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once`
-from the repository checkout. That command is not the primary product UX.
+from the repository checkout. Until packaged approval ships, the web wizard
+also shows this executable command in a separate fallback/debug block so a
+first-time owner can still claim the invite and reach connected state. That
+command is not the primary product UX.
 
 `POST /api/pair/init` returns:
 

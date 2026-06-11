@@ -8,9 +8,11 @@ agent start, and dashboard connected state after the first heartbeat.
 
 - Command: `pnpm --dir web build`
 - Server: `NEUL_ADDR=127.0.0.1:18085 NEUL_DB=<temp>/neul.sqlite NEUL_STATIC_DIR=web/dist ./neul-server`
-- Browser action: open the dashboard, click `첫 머신 등록`, wait for `Run with packaged neul client:`
+- Browser action: open the dashboard, click `첫 머신 등록`, wait for `Run with packaged neul client:` and the separate fallback/debug command.
 - Enroll command with packaged client:
   `neul enroll --server http://127.0.0.1:18085`
+- Transitional executable command before packaged approval ships:
+  `go run ./cmd/neul agent enroll --server http://127.0.0.1:18085 --pair <pair-token> --connect-once`
 - Expected browser result: the generated command disappears after the CLI connects, and the machine row shows `Connected`.
 - Screenshot: `evidence/task-4-agent-onboarding-wizard-browser.png`
 - CLI transcript: `evidence/task-4-agent-onboarding-wizard-browser-log.txt`
@@ -40,6 +42,8 @@ agent start, and dashboard connected state after the first heartbeat.
 - Expected config: `<temp>/config/config.json` exists with mode `0600`
 - Expected server state: `GET /api/dashboard` shows one healthy machine with `lastHeartbeatAt`
 - Use this path only for local checkout QA before packaged binaries exist.
+- The web wizard may also show this command in a separate fallback/debug block
+  until the packaged approval and deep-link flow ships.
 
 ## Existing config and force
 

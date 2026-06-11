@@ -35,6 +35,8 @@ describe("Korean-first copy", () => {
 			agentNotResponding: "agent 응답 없음",
 			connected: "연결됨",
 			checkoutHint: "Run with packaged neul client:",
+			fallbackHint:
+				"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 		});
 		expect(copy.onboarding.installOptions).toEqual([
 			"macOS: Homebrew tap 또는 signed .pkg",
@@ -42,6 +44,9 @@ describe("Korean-first copy", () => {
 		]);
 		expect(copy.onboarding.commandTemplate).toBe(
 			"neul enroll --server <origin>",
+		);
+		expect(copy.onboarding.fallbackCommandTemplate).toBe(
+			"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
 		);
 	});
 

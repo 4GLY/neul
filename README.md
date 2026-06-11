@@ -106,7 +106,9 @@ checkout-local fallback/debug 명령으로 같은 server, pair claim, heartbeat
 
 개발자나 QA가 packaged client 없이 로컬 checkout에서 enroll 경로를 검증해야
 할 때만 pair token을 만든 뒤 다음 fallback/debug 명령을 직접 실행한다. 이
-명령은 웹 wizard의 primary copy가 아니다.
+명령은 웹 wizard의 primary copy가 아니다. packaged approval flow가 구현되기
+전까지 wizard는 이 명령을 primary packaged 명령 아래 fallback/debug로 별도
+표시한다.
 
 ```sh
 go run ./cmd/neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... --connect-once

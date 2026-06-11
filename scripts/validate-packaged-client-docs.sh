@@ -45,6 +45,7 @@ packaged_primary_flow() {
 	require_text "web/src/copy.ts" "macOS: Homebrew tap 또는 signed .pkg" "web macOS install instruction"
 	require_text "web/src/copy.ts" "Linux: Debian/Ubuntu .deb 또는 tarball" "web Linux install instruction"
 	require_text "web/src/copy.ts" "neul enroll --server <origin>" "web target enroll command"
+	require_text "web/src/copy.ts" "fallback/debug 명령으로 등록하세요" "web fallback/debug instruction"
 	require_text "web/src/onboardingWizard.test.tsx" "not.toContain(\"--pair\")" "web hides pair token in target command"
 	require_text "internal/domain/contracts.md" "Primary packaged client onboarding flow" "contract packaged onboarding heading"
 	require_text "internal/domain/contracts.md" "neul client install" "contract packaged client install"
@@ -54,6 +55,8 @@ packaged_primary_flow() {
 fallback_debug_separation() {
 	require_text "README.md" "### fallback/debug: checkout-local enrollment" "README fallback heading"
 	require_text "docs/qa/agent-onboarding.md" "## Fallback/debug checkout-local enrollment" "QA fallback heading"
+	require_text "web/src/copy.ts" "go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once" "web executable fallback command"
+	require_text "web/e2e/mvp-flow.ts" "page.locator(\"code\").nth(1)" "E2E uses visible fallback command"
 	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "MVP primary flow"
 	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "contract primary flow"
 	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "README primary flow"
