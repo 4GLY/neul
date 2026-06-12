@@ -233,8 +233,18 @@ func replaceSymlink(homeDir string, targetPath string, managedPath string) error
 		return err
 	}
 	parent := filepath.Dir(targetPath)
-	tmpLink := filepath.Join(parent, ".neul-dotfile-link")
-	_ = os.Remove(tmpLink)
+	tmpFile, err := os.CreateTemp(parent, ".neul-dotfile-link-*")
+	if err != nil {
+		return dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("create temp symlink name: %w", err))
+	}
+	tmpLink := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpLink)
+		return dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("close temp symlink name: %w", err))
+	}
+	if err := os.Remove(tmpLink); err != nil {
+		return dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("prepare temp symlink: %w", err))
+	}
 	if err := os.Symlink(managedPath, tmpLink); err != nil {
 		return dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("create temp symlink: %w", err))
 	}

@@ -121,6 +121,43 @@ func TestDotfileSymlink_appliesManagedSymlink_whenTargetIsAllowlisted(t *testing
 	}
 }
 
+func TestDotfileSymlink_preservesExistingTempNameFile_whenReplacingLink(t *testing.T) {
+	homeDir := t.TempDir()
+	targetDir := filepath.Join(homeDir, ".config", "neul")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	sentinelPath := filepath.Join(targetDir, ".neul-dotfile-link")
+	if err := os.WriteFile(sentinelPath, []byte("sentinel\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	resource := DesiredResource{
+		ID:             "resource_dot_nested",
+		Kind:           "dotfile",
+		DesiredVersion: 4,
+		Spec:           dotfileResourceSpec("~/.config/neul/link.conf", "symlink"),
+	}
+
+	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+
+	requireDotfileEvent(t, event, "in_sync", "dotfile_applied", 4)
+	linkTarget, err := os.Readlink(filepath.Join(targetDir, "link.conf"))
+	if err != nil {
+		t.Fatalf("Readlink() error = %v", err)
+	}
+	if !strings.HasPrefix(linkTarget, filepath.Join(homeDir, ".local", "state", "neul", "dotfiles", "base", "resource_dot_nested")+string(filepath.Separator)) {
+		t.Fatalf("link target = %s, want managed state path under home", linkTarget)
+	}
+	body, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatalf("ReadFile() sentinel error = %v", err)
+	}
+	if string(body) != "sentinel\n" {
+		t.Fatalf("sentinel content = %q, want unchanged", string(body))
+	}
+}
+
 func TestDotfileCopy_updatesFile_whenExistingTargetWasManagedByAgent(t *testing.T) {
 	homeDir := t.TempDir()
 	resource := DesiredResource{
