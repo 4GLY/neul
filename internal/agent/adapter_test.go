@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestHomebrew_fakeAdapterReportsInSyncDriftedAndApplySuccess(t *testing.T) {
+func TestHomebrew_fakeAdapterReportsInSyncDriftedAndApplyInSync(t *testing.T) {
 	fake := &fakePackageAdapter{installed: map[string]string{"kubectl": "1.31.0"}}
 
 	inSync := CheckPackage(context.Background(), fake, DesiredResource{
@@ -28,17 +28,20 @@ func TestHomebrew_fakeAdapterReportsInSyncDriftedAndApplySuccess(t *testing.T) {
 	applied := ApplyPackage(context.Background(), fake, DesiredResource{
 		ID: "resource_apply", Kind: "package", Spec: map[string]interface{}{"sourceKind": "brew", "name": "helm", "desiredVersion": "latest"},
 	})
-	if applied.Status != "apply_success" {
-		t.Fatalf("applied status = %s, want apply_success", applied.Status)
+	if applied.Status != "in_sync" {
+		t.Fatalf("applied status = %s, want in_sync", applied.Status)
 	}
 }
 
-func TestAgentReport_unsupportedMiseProducesUnsupportedAdapter(t *testing.T) {
+func TestAgentReport_unsupportedMiseProducesBlockedUnsupportedMessage(t *testing.T) {
 	event := EvaluateResource(context.Background(), nil, DesiredResource{
 		ID: "resource_mise", Kind: "package", Spec: map[string]interface{}{"sourceKind": "mise", "name": "node", "desiredVersion": "22"},
 	})
-	if event.Status != "unsupported_adapter" {
-		t.Fatalf("status = %s, want unsupported_adapter", event.Status)
+	if event.Status != "blocked" {
+		t.Fatalf("status = %s, want blocked", event.Status)
+	}
+	if !strings.Contains(event.Message, "mise") || !strings.Contains(event.Message, "unsupported") {
+		t.Fatalf("message = %s, want readable unsupported mise source message", event.Message)
 	}
 }
 
@@ -489,5 +492,5 @@ func (f *fakePackageAdapter) Check(_ context.Context, name string, desiredVersio
 
 func (f *fakePackageAdapter) Apply(_ context.Context, name string, desiredVersion string) (string, error) {
 	f.installed[name] = desiredVersion
-	return "apply_success", nil
+	return "in_sync", nil
 }

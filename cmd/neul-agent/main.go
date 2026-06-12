@@ -25,6 +25,7 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	config.EnablePackageAdapters = true
 	client := agent.New(config)
 	ctx := context.Background()
 	if *once {
@@ -41,7 +42,12 @@ func main() {
 	if err := client.Run(ctx, agent.RunOptions{
 		Logger: logger,
 		ConfigReloader: func() (agent.Config, error) {
-			return agent.LoadConfig(*configPath)
+			config, err := agent.LoadConfig(*configPath)
+			if err != nil {
+				return agent.Config{}, err
+			}
+			config.EnablePackageAdapters = true
+			return config, nil
 		},
 	}); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
