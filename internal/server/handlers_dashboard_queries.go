@@ -139,7 +139,7 @@ func queryMachineCountsByMachine(r *http.Request, db *sql.DB) (map[string]machin
 		}
 		counts := countsByMachine[machineID]
 		counts.ResourceCount++
-		state := domain.ResourceState(status)
+		state := dashboardCountResourceState(status)
 		if reportDesiredVersion < resourceDesiredVersion {
 			state = domain.ResourceStatePending
 		}
@@ -159,6 +159,13 @@ func queryMachineCountsByMachine(r *http.Request, db *sql.DB) (map[string]machin
 		return nil, fmt.Errorf("iterate counts: %w", err)
 	}
 	return countsByMachine, nil
+}
+
+func dashboardCountResourceState(status string) domain.ResourceState {
+	if status == "unsupported_adapter" {
+		return domain.ResourceStateBlocked
+	}
+	return domain.ResourceState(status)
 }
 
 func queryLatestReports(r *http.Request, db *sql.DB) (map[string]string, error) {

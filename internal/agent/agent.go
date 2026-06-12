@@ -17,10 +17,11 @@ import (
 )
 
 type Config struct {
-	ServerURL         string        `json:"serverURL"`
-	MachineID         string        `json:"machineId"`
-	MachineToken      string        `json:"machineToken"`
-	HeartbeatInterval time.Duration `json:"-"`
+	ServerURL             string        `json:"serverURL"`
+	MachineID             string        `json:"machineId"`
+	MachineToken          string        `json:"machineToken"`
+	HeartbeatInterval     time.Duration `json:"-"`
+	EnablePackageAdapters bool          `json:"-"`
 }
 
 type Client struct {
@@ -60,7 +61,11 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func New(config Config) *Client {
-	return NewWithAdapters(config, unavailableBrewAdapter{})
+	brew := PackageAdapter(disabledBrewAdapter{})
+	if config.EnablePackageAdapters {
+		brew = NewHomebrewAdapter()
+	}
+	return NewWithAdapters(config, brew)
 }
 
 func NewWithAdapters(config Config, brew PackageAdapter) *Client {
@@ -112,11 +117,7 @@ func (c *Client) Tick(ctx context.Context) error {
 		return err
 	}
 	for _, command := range commandResponse.Commands {
-		report := commandReport{
-			MachineID: c.config.MachineID,
-			CommandID: command.ID,
-			Status:    commandStatus(command.Type),
-		}
+		report := c.commandReportFor(ctx, command, desiredState.Resources)
 		if err := c.postJSONWithIdempotency(ctx, "/api/agent/reconcile-report", report, "command-"+command.ID); err != nil {
 			return err
 		}
@@ -139,23 +140,15 @@ type agentCommand struct {
 }
 
 type commandReport struct {
-	MachineID string `json:"machineId"`
-	CommandID string `json:"commandId"`
-	Status    string `json:"status"`
+	MachineID string          `json:"machineId"`
+	CommandID string          `json:"commandId"`
+	Status    string          `json:"status"`
+	Events    []ResourceEvent `json:"events"`
 }
 
 type driftReport struct {
 	MachineID string          `json:"machineId"`
 	Events    []ResourceEvent `json:"events"`
-}
-
-func commandStatus(commandType string) string {
-	switch commandType {
-	case "reconcile_now", "repair_drift":
-		return "dry_run_queued"
-	default:
-		return "unsupported_command"
-	}
 }
 
 func driftIdempotencyKey(machineID string, resources []DesiredResource, events []ResourceEvent) string {
