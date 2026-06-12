@@ -91,6 +91,7 @@ func TestCommandPolling_unknownCommandReportsUnsupportedAndDoesNotExecute(t *tes
 }
 
 func TestAgentTick_reportsDotfileDesiredState(t *testing.T) {
+	homeDir := t.TempDir()
 	var reportBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -114,20 +115,35 @@ func TestAgentTick_reportsDotfileDesiredState(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(Config{ServerURL: server.URL, MachineID: "machine_dot", MachineToken: "mtn_secret"})
+	client := New(Config{ServerURL: server.URL, MachineID: "machine_dot", MachineToken: "mtn_secret", HomeDir: homeDir})
 	if err := client.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
 	for _, expected := range []string{
 		`"resourceId":"resource_dot_zshrc"`,
 		`"status":"in_sync"`,
-		`"message":"dotfile dry run"`,
+		`"message":"dotfile_applied"`,
 		`"desiredVersion":2`,
 		`"appliedVersion":2`,
 	} {
 		if !strings.Contains(reportBody, expected) {
 			t.Fatalf("report body = %s, missing %s", reportBody, expected)
 		}
+	}
+	targetPath := filepath.Join(homeDir, ".zshrc")
+	linkTarget, err := os.Readlink(targetPath)
+	if err != nil {
+		t.Fatalf("Readlink() error = %v", err)
+	}
+	if !strings.HasPrefix(linkTarget, filepath.Join(homeDir, ".local", "state", "neul", "dotfiles", "base", "resource_dot_zshrc")+string(filepath.Separator)) {
+		t.Fatalf("link target = %s, want managed state path under home", linkTarget)
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(body) != "export NEUL=v2\n" {
+		t.Fatalf("content = %q, want desired content", string(body))
 	}
 }
 

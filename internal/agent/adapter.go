@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 )
 
 type DesiredResource struct {
@@ -27,6 +28,14 @@ type PackageAdapter interface {
 }
 
 func EvaluateResource(ctx context.Context, brew PackageAdapter, resource DesiredResource) ResourceEvent {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		homeDir = ""
+	}
+	return EvaluateResourceWithHome(ctx, brew, homeDir, resource)
+}
+
+func EvaluateResourceWithHome(ctx context.Context, brew PackageAdapter, homeDir string, resource DesiredResource) ResourceEvent {
 	switch resource.Kind {
 	case "package":
 		sourceKind := stringSpec(resource, "sourceKind")
@@ -35,11 +44,7 @@ func EvaluateResource(ctx context.Context, brew PackageAdapter, resource Desired
 		}
 		return CheckPackage(ctx, brew, resource)
 	case "dotfile":
-		path := stringSpec(resource, "path")
-		if path == "~/.zshrc" || path == "~/.gitconfig" || len(path) > len("~/.config/") && path[:len("~/.config/")] == "~/.config/" {
-			return ResourceEvent{ResourceID: resource.ID, Status: "in_sync", Message: "dotfile dry run", DesiredVersion: resource.DesiredVersion, AppliedVersion: resource.DesiredVersion}
-		}
-		return ResourceEvent{ResourceID: resource.ID, Status: "blocked", Message: "path_not_allowed", DesiredVersion: resource.DesiredVersion}
+		return ApplyDotfile(ctx, homeDir, resource)
 	default:
 		return ResourceEvent{ResourceID: resource.ID, Status: "unsupported_adapter", Message: resource.Kind + " adapter is unsupported", DesiredVersion: resource.DesiredVersion}
 	}

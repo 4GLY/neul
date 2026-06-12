@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/4gly/neul/internal/domain"
+	"github.com/4gly/neul/internal/domain/dotfiles"
 )
 
 func validPackageSource(sourceKind string) bool {
@@ -45,7 +46,7 @@ func mergeResourcePatch(homeDir string, resource resourceResponse, patch map[str
 		if !ok {
 			return nil, "", fmt.Errorf("invalid dotfile path")
 		}
-		normalizedPath, err := normalizeAllowedDotfilePath(homeDir, path)
+		normalizedPath, err := dotfiles.NormalizeAllowedPath(homeDir, path)
 		if err != nil {
 			return nil, "", err
 		}
