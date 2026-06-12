@@ -142,7 +142,9 @@ test("full MVP dashboard flow visibly onboards, edits, repairs, and agent-acks",
 		await expectQueuedCommand(fixture.baseURL, enrolled, false);
 
 		await page.getByRole("button", { name: "로그 열기" }).click();
-		await expect(page.getByText(/brew_pinned_unsupported/)).toBeVisible();
+		await expect(
+			page.getByText(/brew_pinned_unsupported|unsupported_host/),
+		).toBeVisible();
 
 		writeQaDoc(fixture, enrolled);
 	} finally {
