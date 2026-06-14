@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/4gly/neul/internal/domain"
+	"github.com/4gly/neul/internal/domain/dotfiles"
 )
 
 func handleListResources(db *sql.DB) http.Handler {
@@ -71,7 +72,7 @@ func handleCreateDotfileResource(db *sql.DB, clock func() time.Time, homeDir str
 			writeJSONError(w, http.StatusBadRequest, "bad_json", "Request body must be JSON.")
 			return
 		}
-		normalizedPath, err := normalizeAllowedDotfilePath(homeDir, body.Path)
+		normalizedPath, err := dotfiles.NormalizeAllowedPath(homeDir, body.Path)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "path_not_allowed", "Dotfile path is not allowed.")
 			return

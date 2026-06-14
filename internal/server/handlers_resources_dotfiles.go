@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
+
+	"github.com/4gly/neul/internal/domain/dotfiles"
 )
 
 var (
@@ -34,7 +32,7 @@ func normalizeDotfilePatch(r *http.Request, queryer resourceQueryer, resourceID 
 	if err != nil {
 		return nil, err
 	}
-	normalizedPath, err := normalizeAllowedDotfilePath(homeDir, rawPath)
+	normalizedPath, err := dotfiles.NormalizeAllowedPath(homeDir, rawPath)
 	if err != nil {
 		return nil, errDotfilePathNotAllowed
 	}
@@ -68,14 +66,7 @@ func normalizeDotfilePatch(r *http.Request, queryer resourceQueryer, resourceID 
 }
 
 func validateDotfileSpec(mode string, applyMode string, targetSegment string) error {
-	if mode == "" || targetSegment == "" {
-		return errDotfileInvalid
-	}
-	if applyMode != "copy" && applyMode != "symlink" {
-		return errDotfileInvalid
-	}
-	parsedMode, err := strconv.ParseUint(mode, 8, 32)
-	if err != nil || parsedMode > 0o777 {
+	if err := dotfiles.ValidateSpec(mode, applyMode, targetSegment); err != nil {
 		return errDotfileInvalid
 	}
 	return nil
@@ -117,73 +108,4 @@ func patchString(primary map[string]interface{}, fallback map[string]interface{}
 func stringSpecValue(spec map[string]interface{}, key string) string {
 	value, _ := spec[key].(string)
 	return value
-}
-
-func normalizeAllowedDotfilePath(homeDir string, rawPath string) (string, error) {
-	if homeDir == "" || rawPath == "" || filepath.IsAbs(rawPath) {
-		return "", fmt.Errorf("path not allowed")
-	}
-	if strings.Contains(rawPath, "..") {
-		return "", fmt.Errorf("path traversal")
-	}
-	if rawPath != "~/.zshrc" && rawPath != "~/.gitconfig" && !strings.HasPrefix(rawPath, "~/.config/") {
-		return "", fmt.Errorf("path not allowlisted")
-	}
-	relative := strings.TrimPrefix(rawPath, "~/")
-	cleanRelative := filepath.Clean(relative)
-	if cleanRelative == "." || strings.HasPrefix(cleanRelative, ".."+string(filepath.Separator)) || cleanRelative == ".." {
-		return "", fmt.Errorf("path traversal")
-	}
-	if cleanRelative != ".zshrc" && cleanRelative != ".gitconfig" && !strings.HasPrefix(cleanRelative, ".config"+string(filepath.Separator)) {
-		return "", fmt.Errorf("path not allowlisted")
-	}
-	absoluteHome, err := filepath.Abs(homeDir)
-	if err != nil {
-		return "", fmt.Errorf("home path invalid: %w", err)
-	}
-	absoluteTarget := filepath.Join(absoluteHome, cleanRelative)
-	if err := rejectExistingSymlinkEscape(absoluteHome, absoluteTarget); err != nil {
-		return "", err
-	}
-	return "~/" + filepath.ToSlash(cleanRelative), nil
-}
-
-func rejectExistingSymlinkEscape(homeDir string, targetPath string) error {
-	current := homeDir
-	relative, err := filepath.Rel(homeDir, targetPath)
-	if err != nil {
-		return fmt.Errorf("path rel: %w", err)
-	}
-	for _, part := range strings.Split(relative, string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		current = filepath.Join(current, part)
-		info, err := os.Lstat(current)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil
-			}
-			return fmt.Errorf("lstat path: %w", err)
-		}
-		if info.Mode()&os.ModeSymlink == 0 {
-			continue
-		}
-		resolved, err := filepath.EvalSymlinks(current)
-		if err != nil {
-			return fmt.Errorf("eval symlink: %w", err)
-		}
-		if !pathInside(homeDir, resolved) {
-			return fmt.Errorf("symlink escape")
-		}
-	}
-	return nil
-}
-
-func pathInside(root string, candidate string) bool {
-	relative, err := filepath.Rel(root, candidate)
-	if err != nil {
-		return false
-	}
-	return relative == "." || (!strings.HasPrefix(relative, ".."+string(filepath.Separator)) && relative != "..")
 }

@@ -20,6 +20,7 @@ type Config struct {
 	ServerURL             string        `json:"serverURL"`
 	MachineID             string        `json:"machineId"`
 	MachineToken          string        `json:"machineToken"`
+	HomeDir               string        `json:"homeDir,omitempty"`
 	HeartbeatInterval     time.Duration `json:"-"`
 	EnablePackageAdapters bool          `json:"-"`
 }
@@ -77,6 +78,12 @@ func normalizeConfig(config Config) Config {
 	if config.HeartbeatInterval == 0 {
 		config.HeartbeatInterval = 30 * time.Second
 	}
+	if config.HomeDir == "" {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			config.HomeDir = homeDir
+		}
+	}
 	config.ServerURL = strings.TrimRight(config.ServerURL, "/")
 	return config
 }
@@ -105,7 +112,7 @@ func (c *Client) Tick(ctx context.Context) error {
 	if len(desiredState.Resources) > 0 {
 		events := make([]ResourceEvent, 0, len(desiredState.Resources))
 		for _, resource := range desiredState.Resources {
-			events = append(events, EvaluateResource(ctx, c.brew, resource))
+			events = append(events, EvaluateResourceWithHome(ctx, c.brew, c.config.HomeDir, resource))
 		}
 		report := driftReport{MachineID: c.config.MachineID, Events: events}
 		if err := c.postJSONWithIdempotency(ctx, "/api/agent/drift-report", report, driftIdempotencyKey(c.config.MachineID, desiredState.Resources, events)); err != nil {
