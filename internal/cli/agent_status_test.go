@@ -66,6 +66,32 @@ func TestAgentStatus_printsUnloadedAndNone_whenLaunchAgentIsUnloaded(t *testing.
 	}
 }
 
+func TestAgentStatus_readsSelectedStatusPath_whenStatusFlagIsProvided(t *testing.T) {
+	// Given
+	configPath := writeTestConfig(t)
+	defaultStatusPath := filepath.Join(filepath.Dir(configPath), "status.json")
+	customStatusPath := filepath.Join(t.TempDir(), "custom-status.json")
+	writeTestFile(t, defaultStatusPath, `{"lastHeartbeatAt":"2026-06-05T13:00:00Z"}`)
+	writeTestFile(t, customStatusPath, `{"lastHeartbeatAt":"2026-06-05T14:00:00Z"}`)
+	restore := overrideAgentStatusRuntime(t, "linux", func(string) (launchAgentState, error) {
+		t.Fatal("launch agent probe should not run on non-darwin")
+		return launchAgentStateLoaded, nil
+	})
+	defer restore()
+	var stdout strings.Builder
+
+	// When
+	err := Run([]string{"agent", "status", "--config", configPath, "--status", customStatusPath}, &stdout, &stdout)
+
+	// Then
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Heartbeat: 2026-06-05T14:00:00Z\n") {
+		t.Fatalf("stdout = %q, want custom status heartbeat", stdout.String())
+	}
+}
+
 func TestAgentStatus_returnsError_whenConfigMissingOrInvalid(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -37,6 +37,7 @@ func runAgentStatusCommand(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("agent status", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configPath := flags.String("config", defaultConfigPath(), "config path")
+	statusPath := flags.String("status", "", "status file path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -44,7 +45,11 @@ func runAgentStatusCommand(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	status := readLocalAgentStatus(filepath.Join(filepath.Dir(*configPath), "status.json"))
+	resolvedStatusPath := *statusPath
+	if resolvedStatusPath == "" {
+		resolvedStatusPath = filepath.Join(filepath.Dir(*configPath), "status.json")
+	}
+	status := readLocalAgentStatus(resolvedStatusPath)
 	launchState := launchAgentStateUnknown
 	if agentStatusGOOS == "darwin" {
 		probed, err := probeLaunchAgentState(*configPath)
