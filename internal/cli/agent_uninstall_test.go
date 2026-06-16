@@ -10,6 +10,8 @@ import (
 
 func TestAgentUninstall_removesSelectedPlistByDefault(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	configDir := t.TempDir()
 	configPath := writeResetTestState(t, configDir, "machine_1")
 	plistPath := filepath.Join(configDir, "neul-agent.plist")
@@ -41,6 +43,8 @@ func TestAgentUninstall_removesSelectedPlistByDefault(t *testing.T) {
 
 func TestAgentUninstall_removesSelectedCustomPlistAndKeepsExternalParent(t *testing.T) {
 	// Given a service installed with a custom plist location.
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	rootDir := t.TempDir()
 	configDir := filepath.Join(rootDir, "config")
 	configPath := writeResetTestState(t, configDir, "machine_1")
@@ -103,6 +107,8 @@ func TestAgentUninstall_removesSelectedPlistAndPreservesState_whenNotDarwin(t *t
 
 func TestAgentUninstall_missingPlistDoesNotRemoveState(t *testing.T) {
 	// Given a selected plist path that does not exist.
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	configDir := t.TempDir()
 	configPath := writeResetTestState(t, configDir, "machine_1")
 	plistPath := filepath.Join(configDir, "neul-agent.plist")
@@ -126,6 +132,8 @@ func TestAgentUninstall_missingPlistDoesNotRemoveState(t *testing.T) {
 
 func TestAgentUninstall_isIdempotent_whenRepeated(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	configDir := t.TempDir()
 	configPath := writeResetTestState(t, configDir, "machine_1")
 	plistPath := filepath.Join(configDir, "neul-agent.plist")
@@ -163,6 +171,8 @@ func TestAgentUninstall_isIdempotent_whenRepeated(t *testing.T) {
 
 func TestAgentReset_isIdempotentAndDoesNotRemoveInstalledBinaries_whenRepeated(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	rootDir := t.TempDir()
 	configDir := filepath.Join(rootDir, "config")
 	configPath := writeResetTestState(t, configDir, "machine_1")
@@ -216,6 +226,15 @@ func stubLaunchctlCommand(t *testing.T, fn func([]string) ([]byte, error)) func(
 	runLaunchctlCommand = fn
 	return func() {
 		runLaunchctlCommand = previous
+	}
+}
+
+func forceAgentServiceGOOS(t *testing.T, goos string) func() {
+	t.Helper()
+	previous := agentServiceGOOS
+	agentServiceGOOS = goos
+	return func() {
+		agentServiceGOOS = previous
 	}
 }
 

@@ -67,6 +67,8 @@ func TestAgentReset_refusesMissingOrWrongMachineID(t *testing.T) {
 
 func TestAgentReset_removesSelectedPlistStatusAndLog(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	configDir := t.TempDir()
 	configPath := writeResetTestState(t, configDir, "machine_1")
 	plistPath := filepath.Join(configDir, "neul-agent.plist")
@@ -151,6 +153,8 @@ func TestAgentReset_removesSelectedLocalState_whenNotDarwin(t *testing.T) {
 
 func TestAgentReset_removesCustomPathsAndKeepsExternalParentDirectories(t *testing.T) {
 	// Given a service installed with custom plist/status/log outside the config dir.
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	rootDir := t.TempDir()
 	configDir := filepath.Join(rootDir, "config")
 	configPath := writeResetTestState(t, configDir, "machine_1")
@@ -193,6 +197,8 @@ func TestAgentReset_removesCustomPathsAndKeepsExternalParentDirectories(t *testi
 
 func TestAgentReset_removesDefaultConfigDirOnlyWhenEmpty(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	t.Setenv("HOME", t.TempDir())
 	defaultDir := filepath.Join(t.TempDir(), "neul")
 	t.Setenv("NEUL_CONFIG_DIR", defaultDir)
@@ -217,6 +223,8 @@ func TestAgentReset_removesDefaultConfigDirOnlyWhenEmpty(t *testing.T) {
 
 func TestAgentReset_keepsDefaultConfigDirWhenNotEmpty(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	t.Setenv("HOME", t.TempDir())
 	defaultDir := filepath.Join(t.TempDir(), "neul")
 	t.Setenv("NEUL_CONFIG_DIR", defaultDir)
@@ -244,6 +252,8 @@ func TestAgentReset_keepsDefaultConfigDirWhenNotEmpty(t *testing.T) {
 
 func TestAgentReset_keepsExternalParentDirectories(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	t.Setenv("HOME", t.TempDir())
 	parentDir := t.TempDir()
 	configDir := filepath.Join(parentDir, "nested", "..", "external")
@@ -271,6 +281,8 @@ func TestAgentReset_keepsExternalParentDirectories(t *testing.T) {
 
 func TestResetDoesNotCallServerDeleteOrRevoke(t *testing.T) {
 	// Given
+	restoreGOOS := forceAgentServiceGOOS(t, "darwin")
+	defer restoreGOOS()
 	t.Setenv("HOME", t.TempDir())
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
