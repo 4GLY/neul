@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -13,6 +14,10 @@ import (
 type repairCommandResponse struct {
 	CommandID string `json:"commandId"`
 	Status    string `json:"status"`
+}
+
+type repairDriftRequest struct {
+	ResourceIDs []string `json:"resourceIds"`
 }
 
 func handleRepairDrift(db *sql.DB, clock func() time.Time) http.Handler {
@@ -32,9 +37,21 @@ func handleRepairDrift(db *sql.DB, clock func() time.Time) http.Handler {
 			writeJSONError(w, http.StatusInternalServerError, "command_query_failed", "Could not read repair command.")
 			return
 		}
+		var body repairDriftRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeJSONError(w, http.StatusBadRequest, "bad_json", "Request body must be JSON.")
+				return
+			}
+		}
 		resourceIDs, err := queryDriftedResourceIDs(r, db, machineID)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "drift_query_failed", "Could not read drifted resources.")
+			return
+		}
+		resourceIDs, err = selectRepairResourceIDs(resourceIDs, body.ResourceIDs)
+		if err != nil {
+			writeJSONError(w, http.StatusConflict, "resource_not_drifted", "Selected resource is no longer drifted.")
 			return
 		}
 		commandID := "command_" + hashSecret(machineID + idempotencyKey)[:16]
@@ -108,4 +125,27 @@ func queryDriftedResourceIDs(r *http.Request, db *sql.DB, machineID string) ([]s
 		return nil, fmt.Errorf("iterate drifted resources: %w", err)
 	}
 	return resourceIDs, nil
+}
+
+func selectRepairResourceIDs(driftedResourceIDs []string, requestedResourceIDs []string) ([]string, error) {
+	if len(requestedResourceIDs) == 0 {
+		return driftedResourceIDs, nil
+	}
+	drifted := make(map[string]struct{}, len(driftedResourceIDs))
+	for _, resourceID := range driftedResourceIDs {
+		drifted[resourceID] = struct{}{}
+	}
+	selected := make([]string, 0, len(requestedResourceIDs))
+	seen := make(map[string]struct{}, len(requestedResourceIDs))
+	for _, resourceID := range requestedResourceIDs {
+		if _, ok := seen[resourceID]; ok {
+			continue
+		}
+		seen[resourceID] = struct{}{}
+		if _, ok := drifted[resourceID]; !ok {
+			return nil, errors.New("selected resource is not drifted")
+		}
+		selected = append(selected, resourceID)
+	}
+	return selected, nil
 }

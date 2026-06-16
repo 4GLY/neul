@@ -27,6 +27,7 @@ type DashboardWorkspaceProps = {
 	readonly osFilter: "all" | Machine["os"];
 	readonly runState: "idle" | "running";
 	readonly selectedMachineId: string;
+	readonly selectedRepairResourceId: string;
 	readonly statusFilter: "all" | MachineStatus;
 	readonly onConnected: () => void;
 	readonly onEditorToggle: () => void;
@@ -36,6 +37,7 @@ type DashboardWorkspaceProps = {
 	readonly onOpenLogs: () => void;
 	readonly onOsFilterChange: (next: "all" | Machine["os"]) => void;
 	readonly onRepairDrift: () => void;
+	readonly onRepairResourceSelect: (next: string) => void;
 	readonly onResourceSaved: () => void;
 	readonly onReconcile: () => void;
 	readonly onRetryLoad: () => void;
@@ -55,6 +57,7 @@ export function DashboardWorkspace({
 	osFilter,
 	runState,
 	selectedMachineId,
+	selectedRepairResourceId,
 	statusFilter,
 	onConnected,
 	onEditorToggle,
@@ -64,6 +67,7 @@ export function DashboardWorkspace({
 	onOpenLogs,
 	onOsFilterChange,
 	onRepairDrift,
+	onRepairResourceSelect,
 	onResourceSaved,
 	onReconcile,
 	onRetryLoad,
@@ -210,7 +214,9 @@ export function DashboardWorkspace({
 							<MachineInspector
 								machine={selectedMachine}
 								events={events ?? []}
+								selectedRepairResourceId={selectedRepairResourceId}
 								onRepairDrift={onRepairDrift}
+								onRepairResourceSelect={onRepairResourceSelect}
 								onOpenLogs={onOpenLogs}
 							/>
 						)}

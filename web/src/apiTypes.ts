@@ -55,6 +55,7 @@ export type ApiResources = {
 
 export type ApiMachineEvent = {
 	readonly id: string;
+	readonly resourceId?: string;
 	readonly status: string;
 	readonly message: string;
 	readonly createdAt: string;
