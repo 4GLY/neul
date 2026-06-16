@@ -39,7 +39,8 @@ describe("Korean-first copy", () => {
 				"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 		});
 		expect(copy.onboarding.installOptions).toEqual([
-			"macOS: Homebrew tap 또는 signed .pkg",
+			"macOS local QA: unsigned dev .pkg",
+			"Production macOS: Developer ID Application/Installer, notarization, stapling",
 			"Linux: Debian/Ubuntu .deb 또는 tarball",
 		]);
 		expect(copy.onboarding.commandTemplate).toBe(

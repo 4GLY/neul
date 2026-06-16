@@ -43,7 +43,8 @@ export const onboardingCopy = {
 	cancelled: "등록이 취소되었습니다.",
 	retry: "다시 만들기",
 	installOptions: [
-		"macOS: Homebrew tap 또는 signed .pkg",
+		"macOS local QA: unsigned dev .pkg",
+		"Production macOS: Developer ID Application/Installer, notarization, stapling",
 		"Linux: Debian/Ubuntu .deb 또는 tarball",
 	],
 	checkoutHint: "Run with packaged neul client:",

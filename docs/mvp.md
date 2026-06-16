@@ -32,18 +32,23 @@ MVP 플로우:
 
 1. 웹 empty state에서 `첫 머신 등록`을 클릭한다.
 2. 웹은 packaged neul client 설치 안내를 보여준다.
-   - macOS: Homebrew tap 또는 signed .pkg
+   - macOS local QA: unsigned dev .pkg
+   - Production macOS distribution requires Developer ID Application and
+     Developer ID Installer certificates, notarization, and stapling.
    - Linux: Debian/Ubuntu .deb와 tarball
-3. 사용자가 `neul enroll --server <origin>`을 실행하면 client가
+3. macOS `.pkg` installs `neul` at `/usr/local/bin/neul` and `neul-agent` at
+   `/usr/local/libexec/neul-agent`; per-user LaunchAgent registration is
+   handled by `neul agent install`.
+4. 사용자가 `neul enroll --server <origin>`을 실행하면 client가
    `127.0.0.1` local callback을 열고 browser approval URL을 연다.
-4. owner session이 있는 브라우저가 승인하면 서버는 10분 뒤 만료되는
+5. owner session이 있는 브라우저가 승인하면 서버는 10분 뒤 만료되는
    one-time pair token을 만들고 `neul://enroll?server=<origin>&pair=<token>`
    deep link 또는 local callback으로 client에 돌려준다.
-5. client는 pair token을 claim하고 local config를 `0600` 권한으로 저장한
+6. client는 pair token을 claim하고 local config를 `0600` 권한으로 저장한
    뒤 user-level agent를 시작한다.
-6. agent가 heartbeat, desired-state fetch, drift/report 경로를 실제
+7. agent가 heartbeat, desired-state fetch, drift/report 경로를 실제
    reconcile 루프로 통과하면 웹은 `connected`로 전환한다.
-7. claim 이후 120초 안에 heartbeat가 보이지 않으면 웹은
+8. claim 이후 120초 안에 heartbeat가 보이지 않으면 웹은
    `agent_not_responding` 상태와 retry/help copy를 보여준다.
 
 First-run states: `not_logged_in`, `waiting_for_browser_approval`, `enrolled`,
@@ -62,6 +67,12 @@ Approval API and package artifacts are target contract for the packaged-client
 implementation. Until they ship, executable local QA uses only the
 fallback/debug path below, and the wizard exposes that command separately from
 the primary packaged-client command.
+
+Unsigned dev `.pkg` artifacts are local-testing only. They must not be described
+as production-ready, signed, notarized, or stapled. Production macOS
+distribution needs a Developer ID Application certificate for binaries, a
+Developer ID Installer certificate for the installer package, Apple
+notarization, and stapling before publishing.
 
 <!-- packaged-primary:end -->
 
@@ -311,6 +322,21 @@ Agent는 HTTPS outbound REST만 사용한다. Agent가 desired state를 poll하�
 - `neul agent logs`
 
 MVP CLI는 desired state 편집 기능을 갖지 않는다. 편집은 웹 중심이다.
+
+macOS LaunchAgent packaging contract:
+
+- Unsigned dev `.pkg` artifacts are local-testing only.
+- Local dev packages are built with `scripts/build-macos-dev-pkg.sh`; Homebrew
+  tap distribution remains a future/alternate path unless fully implemented.
+- Production macOS distribution requires Developer ID Application and
+  Developer ID Installer certificates, notarization, and stapling.
+- The `.pkg` installs `/usr/local/bin/neul` and
+  `/usr/local/libexec/neul-agent`.
+- Package QA may enroll explicitly with
+  `neul agent enroll --server <origin> --pair <token> --connect-once`, then run
+  `neul agent install`.
+- Legacy/debug compatibility keeps `neul init --pair --server`; it is not the
+  primary product command.
 
 ## 5. 핵심 API 초안
 

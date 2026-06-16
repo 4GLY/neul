@@ -100,6 +100,11 @@ enroll하는 흐름이다. 현재 로컬 데모에서는 packaged binary 배포 
 checkout-local fallback/debug 명령으로 같은 server, pair claim, heartbeat
 경로를 검증한다.
 
+4GL-87 macOS package QA uses an unsigned dev `.pkg` for local testing only. The
+package installs `/usr/local/bin/neul` and `/usr/local/libexec/neul-agent`;
+production distribution requires Developer ID Application and Developer ID
+Installer certificates, notarization, and stapling before publishing.
+
 <!-- packaged-primary:end -->
 
 ### fallback/debug: checkout-local enrollment
@@ -119,6 +124,17 @@ go run ./cmd/neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... 
 ```sh
 go run ./cmd/neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... --config-dir .demo/agent-config --connect-once
 ```
+
+packaged `.pkg` QA는 checkout-local `go run` 대신 설치된 binary 표면을
+사용한다.
+
+```sh
+neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... --connect-once
+neul agent install
+```
+
+Legacy/debug 호환성 확인이 필요할 때만 `neul init --pair --server` 경로를
+사용한다.
 
 ### http, https, Tailscale 접근
 

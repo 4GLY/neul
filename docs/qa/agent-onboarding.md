@@ -9,8 +9,18 @@ agent start, and dashboard connected state after the first heartbeat.
 - Command: `pnpm --dir web build`
 - Server: `NEUL_ADDR=127.0.0.1:18085 NEUL_DB=<temp>/neul.sqlite NEUL_STATIC_DIR=web/dist ./neul-server`
 - Browser action: open the dashboard, click `첫 머신 등록`, wait for `Run with packaged neul client:` and the separate fallback/debug command.
+- macOS package QA: unsigned dev `.pkg` is local-testing only, installs
+  `/usr/local/bin/neul` and `/usr/local/libexec/neul-agent`, and is not a
+  production signed/notarized/stapled artifact.
+- Local macOS dev package build: `scripts/build-macos-dev-pkg.sh`.
+- Production macOS distribution requires Developer ID Application and Developer
+  ID Installer certificates, notarization, and stapling.
 - Enroll command with packaged client:
   `neul enroll --server http://127.0.0.1:18085`
+- Explicit package-QA fallback command with installed binary:
+  `neul agent enroll --server http://127.0.0.1:18085 --pair <pair-token> --connect-once`
+- LaunchAgent registration after package-QA enrollment:
+  `neul agent install`
 - Transitional executable command before packaged approval ships:
   `go run ./cmd/neul agent enroll --server http://127.0.0.1:18085 --pair <pair-token> --connect-once`
 - Expected browser result: the generated command disappears after the CLI connects, and the machine row shows `Connected`.
@@ -54,6 +64,11 @@ agent start, and dashboard connected state after the first heartbeat.
 ## Known MVP limits
 
 - Checkout-local `go run` enrollment is fallback/debug only while packaged binaries are not available.
+- Unsigned dev `.pkg` artifacts are local-testing only.
+- Production macOS distribution requires Developer ID Application and Developer
+  ID Installer certificates, notarization, and stapling.
+- macOS package paths are `/usr/local/bin/neul` and
+  `/usr/local/libexec/neul-agent`.
 - no /install.sh endpoint is shipped.
 - `curl | sh` is not shipped.
 - Native GUI and menubar client are not shipped.
