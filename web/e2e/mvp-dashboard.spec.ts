@@ -133,9 +133,7 @@ test("full MVP dashboard flow visibly onboards, edits, repairs, and agent-acks",
 		);
 		await page.getByRole("button", { name: "drift 복구" }).click();
 		expect((await repairResponsePromise).status()).toBe(202);
-		await expect(
-			page.getByText("복구 명령을 대기열에 추가했습니다"),
-		).toBeVisible();
+		await expect(page.getByText("복구 명령 대기 중")).toBeVisible();
 
 		await expectQueuedCommand(fixture.baseURL, enrolled, true);
 		await runAgentTick(enrolled);
