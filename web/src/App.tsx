@@ -1,18 +1,14 @@
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { DashboardData, MachineEvent } from "./api";
-import {
-	loadDashboardData,
-	loadMachineEvents,
-	OwnerSessionRequiredError,
-	repairDrift,
-} from "./api";
+import type { DashboardData } from "./api";
+import { loadDashboardData, OwnerSessionRequiredError } from "./api";
 import { DashboardWorkspace } from "./DashboardWorkspace";
 import {
 	selectDashboardMachineId,
 	shouldPreserveEventsOnMachineTransition,
 } from "./dashboardView";
 import { FirstRunSetup } from "./FirstRunSetup";
+import { useRepairController } from "./repairController";
 import type { Machine, MachineStatus } from "./types";
 
 type LoadState = "loading" | "ready" | "error" | "setup";
@@ -30,38 +26,37 @@ export function App(): ReactElement {
 	);
 	const [editorOpen, setEditorOpen] = useState(false);
 	const [runState, setRunState] = useState<"idle" | "running">("idle");
-	const [events, setEvents] = useState<readonly MachineEvent[]>([]);
-	const [activityNotice, setActivityNotice] = useState("");
 	const [onboardingOpen, setOnboardingOpen] = useState(false);
-	const eventRequestId = useRef(0);
+	const activeEventMachineId = useRef("");
 
 	const showSetup = useCallback((): void => {
 		setDashboard(null);
 		setSelectedMachineId("");
-		setEvents([]);
-		setActivityNotice("");
 		setOnboardingOpen(false);
 		setEditorOpen(false);
 		setLoadState("setup");
 	}, []);
 
-	const refreshDashboard = useCallback(async (): Promise<void> => {
-		setLoadState((current) => (current === "ready" ? "ready" : "loading"));
-		try {
-			const data = await loadDashboardData();
-			setDashboard(data);
-			setSelectedMachineId((current) =>
-				selectDashboardMachineId(current, data.machines),
-			);
-			setLoadState("ready");
-		} catch (error) {
-			if (error instanceof OwnerSessionRequiredError) {
-				showSetup();
-				return;
+	const refreshDashboard =
+		useCallback(async (): Promise<DashboardData | null> => {
+			setLoadState((current) => (current === "ready" ? "ready" : "loading"));
+			try {
+				const data = await loadDashboardData();
+				setDashboard(data);
+				setSelectedMachineId((current) =>
+					selectDashboardMachineId(current, data.machines),
+				);
+				setLoadState("ready");
+				return data;
+			} catch (error) {
+				if (error instanceof OwnerSessionRequiredError) {
+					showSetup();
+					return null;
+				}
+				setLoadState("error");
+				return null;
 			}
-			setLoadState("error");
-		}
-	}, [showSetup]);
+		}, [showSetup]);
 
 	useEffect(() => {
 		void refreshDashboard();
@@ -72,9 +67,23 @@ export function App(): ReactElement {
 	const selectedMachine =
 		machines.find((machine) => machine.id === selectedMachineId) ??
 		fallbackMachine;
+	const {
+		activityNotice,
+		clearRepairPoll,
+		events,
+		handleOpenLogs,
+		handleRepairDrift,
+		resetRepairState,
+		selectedRepairResourceId,
+		setSelectedRepairResourceId,
+	} = useRepairController({
+		selectedMachine,
+		activeEventMachineId,
+		refreshDashboard,
+		showSetup,
+	});
 	const eventMachineId = selectedMachine?.id ?? "";
 	const previousEventMachineId = useRef<string | null>(null);
-	const activeEventMachineId = useRef(eventMachineId);
 
 	useEffect(() => {
 		activeEventMachineId.current = eventMachineId;
@@ -88,58 +97,23 @@ export function App(): ReactElement {
 			return;
 		}
 		previousEventMachineId.current = eventMachineId;
-		setEvents([]);
-	}, [eventMachineId]);
+		clearRepairPoll();
+		resetRepairState();
+	}, [clearRepairPoll, eventMachineId, resetRepairState]);
 
 	function handleReconcile(): void {
 		setRunState("running");
 		window.setTimeout(() => setRunState("idle"), 1600);
 	}
 
-	async function handleRepairDrift(): Promise<void> {
-		if (selectedMachine === undefined) {
-			return;
-		}
-		try {
-			await repairDrift(selectedMachine.id);
-			setActivityNotice("복구 명령을 대기열에 추가했습니다");
-			await refreshDashboard();
-		} catch (error) {
-			if (error instanceof OwnerSessionRequiredError) {
-				showSetup();
-				return;
-			}
-			setActivityNotice("복구 명령을 만들지 못했습니다");
-		}
-	}
-
-	async function handleOpenLogs(): Promise<void> {
-		if (selectedMachine === undefined) {
-			return;
-		}
-		const machineID = selectedMachine.id;
-		const requestId = eventRequestId.current + 1;
-		eventRequestId.current = requestId;
-		try {
-			const nextEvents = await loadMachineEvents(machineID);
-			if (
-				eventRequestId.current !== requestId ||
-				activeEventMachineId.current !== machineID
-			) {
-				return;
-			}
-			setEvents(nextEvents);
-		} catch (error) {
-			if (error instanceof OwnerSessionRequiredError) {
-				showSetup();
-				return;
-			}
-			setActivityNotice("로그를 불러오지 못했습니다");
-		}
-	}
-
 	if (loadState === "setup") {
-		return <FirstRunSetup onSetupComplete={refreshDashboard} />;
+		return (
+			<FirstRunSetup
+				onSetupComplete={async () => {
+					await refreshDashboard();
+				}}
+			/>
+		);
 	}
 
 	return (
@@ -149,6 +123,7 @@ export function App(): ReactElement {
 			dashboard={dashboard}
 			editorOpen={editorOpen}
 			events={events}
+			selectedRepairResourceId={selectedRepairResourceId}
 			loadState={loadState}
 			onConnected={() => {
 				setOnboardingOpen(false);
@@ -165,6 +140,7 @@ export function App(): ReactElement {
 			onRepairDrift={() => {
 				void handleRepairDrift();
 			}}
+			onRepairResourceSelect={setSelectedRepairResourceId}
 			onResourceSaved={() => {
 				void refreshDashboard();
 			}}

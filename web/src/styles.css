@@ -668,6 +668,28 @@ select {
 	border-radius: inherit;
 	background: #1763e5;
 }
+.repair-resource-list {
+	display: grid;
+	gap: 8px;
+	margin: 12px 0;
+}
+.repair-resource-list h3 {
+	margin: 0;
+}
+.repair-resource-list button {
+	border: 1px solid #dce2eb;
+	border-radius: 7px;
+	background: #fff;
+	color: #344054;
+	padding: 8px 10px;
+	text-align: left;
+}
+.repair-resource-list button.active,
+.repair-resource-list button:hover {
+	border-color: #1763e5;
+	background: #eef4ff;
+	color: #1459d9;
+}
 .event-list {
 	display: grid;
 	gap: 8px;

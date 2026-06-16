@@ -16,14 +16,21 @@ const statusLabels: Readonly<Record<MachineStatus, string>> = {
 export function MachineInspector({
 	machine,
 	events,
+	selectedRepairResourceId,
 	onRepairDrift,
+	onRepairResourceSelect,
 	onOpenLogs,
 }: {
 	readonly machine: Machine;
 	readonly events: readonly MachineEvent[];
+	readonly selectedRepairResourceId: string;
 	readonly onRepairDrift: () => void;
+	readonly onRepairResourceSelect: (next: string) => void;
 	readonly onOpenLogs: () => void;
 }): ReactElement {
+	const driftedEvents = events.filter(
+		(event) => event.status === "drifted" && validResourceId(event.resourceId),
+	);
 	return (
 		<section className="inspector">
 			<header>
@@ -69,6 +76,19 @@ export function MachineInspector({
 					/>
 				</div>
 			</div>
+			{driftedEvents.length === 0 ? null : (
+				<div className="repair-resource-list">
+					<h3>drift 리소스</h3>
+					{driftedEvents.map((event) => (
+						<RepairResourceButton
+							event={event}
+							key={event.id}
+							selectedRepairResourceId={selectedRepairResourceId}
+							onRepairResourceSelect={onRepairResourceSelect}
+						/>
+					))}
+				</div>
+			)}
 			<div className="inspector-actions">
 				<button
 					className="primary-button"
@@ -97,6 +117,36 @@ export function MachineInspector({
 			)}
 		</section>
 	);
+}
+
+function RepairResourceButton({
+	event,
+	selectedRepairResourceId,
+	onRepairResourceSelect,
+}: {
+	readonly event: MachineEvent;
+	readonly selectedRepairResourceId: string;
+	readonly onRepairResourceSelect: (next: string) => void;
+}): ReactElement | null {
+	const resourceId = event.resourceId;
+	if (!validResourceId(resourceId)) {
+		return null;
+	}
+	return (
+		<button
+			className={resourceId === selectedRepairResourceId ? "active" : ""}
+			type="button"
+			onClick={() => {
+				onRepairResourceSelect(resourceId);
+			}}
+		>
+			{resourceId}
+		</button>
+	);
+}
+
+function validResourceId(value: string | undefined): value is string {
+	return value !== undefined && value !== "";
 }
 
 export function ActivityFeed({
