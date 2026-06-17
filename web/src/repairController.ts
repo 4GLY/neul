@@ -68,12 +68,21 @@ export function useRepairController({
 			repairRequestId.current = repairID;
 			clearRepairPoll();
 			await repairDrift(machineID, resourceIDs);
-			setActivityNotice("복구 명령 대기 중");
-			const outcome = await refreshRepairOutcome(
-				machineID,
-				selectedRepairResourceId,
-				repairID,
-			);
+			let outcome: RepairOutcome;
+			try {
+				setActivityNotice("복구 명령 대기 중");
+				outcome = await refreshRepairOutcome(
+					machineID,
+					selectedRepairResourceId,
+					repairID,
+				);
+			} catch (error) {
+				if (error instanceof OwnerSessionRequiredError) {
+					throw error;
+				}
+				setActivityNotice("복구 상태를 새로고침하지 못했습니다");
+				return;
+			}
 			if (outcome === "pending") {
 				scheduleRepairPoll(machineID, selectedRepairResourceId, repairID, 1);
 			}

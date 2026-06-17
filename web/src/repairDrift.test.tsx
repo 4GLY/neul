@@ -78,6 +78,50 @@ describe("repair drift UX", () => {
 		expect(document.body.textContent).toContain("복구 성공");
 	});
 
+	it("does not report command creation failure when post succeeds but refresh fails", async () => {
+		let dashboardCalls = 0;
+		vi.stubGlobal(
+			"fetch",
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const path = String(input);
+				if (path === "/api/dashboard") {
+					dashboardCalls += 1;
+					if (dashboardCalls === 1) {
+						return new Response(JSON.stringify(driftDashboardForTest()), {
+							headers: { "Content-Type": "application/json" },
+						});
+					}
+					return new Response(JSON.stringify({ error: { code: "server" } }), {
+						headers: { "Content-Type": "application/json" },
+						status: 500,
+					});
+				}
+				if (path === "/api/resources") {
+					return new Response(JSON.stringify({ resources: [] }), {
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				if (init?.method === "POST" && path.includes("repair-drift")) {
+					return new Response(JSON.stringify({ commandId: "command_1" }), {
+						headers: { "Content-Type": "application/json" },
+						status: 202,
+					});
+				}
+				throw new Error(`unexpected fetch: ${path}`);
+			},
+		);
+		await renderApp();
+
+		await click("drift 복구");
+
+		expect(document.body.textContent).not.toContain(
+			"복구 명령을 만들지 못했습니다",
+		);
+		expect(document.body.textContent).toContain(
+			"복구 상태를 새로고침하지 못했습니다",
+		);
+	});
+
 	it("opens recent event logs without streaming", async () => {
 		const calls: string[] = [];
 		stubDashboardFetch(calls);
@@ -89,3 +133,36 @@ describe("repair drift UX", () => {
 		expect(document.body.textContent).toContain("kubectl missing");
 	});
 });
+
+function driftDashboardForTest(): unknown {
+	return {
+		metrics: {
+			total: 1,
+			healthy: 0,
+			drifted: 1,
+			pending: 0,
+			offline: 0,
+			blocked: 0,
+			unknown: 0,
+		},
+		machines: [
+			{
+				id: "machine_1",
+				name: "work-macbook",
+				os: "darwin",
+				arch: "arm64",
+				agentVersion: "0.1.0",
+				status: "drifted",
+				lastHeartbeatAt: "2026-06-05T13:00:00Z",
+				lastReconcileAt: "2026-06-05T13:01:00Z",
+				driftCount: 1,
+				pendingCount: 0,
+				blockedCount: 0,
+				resourceCount: 1,
+				appliedCount: 0,
+			},
+		],
+		activity: [],
+		ledger: [],
+	};
+}
