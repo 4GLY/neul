@@ -22,7 +22,7 @@ web/
 | App setup/session state | `src/App.tsx`, `src/FirstRunSetup.tsx` | Owner session setup token flow. |
 | Dashboard layout | `src/DashboardWorkspace.tsx`, `src/FleetPanels.tsx`, `src/SidePanel.tsx` | Machine list, metrics, inspector. |
 | Onboarding UI | `src/OnboardingWizard.tsx`, `src/enrollCommand.ts`, `src/enrollmentShell.ts` | Packaged-primary copy, fallback/debug separation. |
-| API mapping | `src/api.ts`, `src/apiTypes.ts`, `src/apiResources.ts`, `src/resourceApi.ts` | Keep server shape mapping explicit. |
+| API mapping | `src/api.ts`, `src/apiTypes.ts`, `src/apiResources.ts` | Keep server shape mapping explicit. |
 | Resource editing | `src/ResourceEditor.tsx`, `src/DotfileResourceEditor.tsx` | Package and dotfile desired state. |
 | Repair flow | `src/repairController.ts`, `src/apiRepair.ts` | Polling and stale/terminal outcomes. |
 | Copy contracts | `src/copy.ts`, `src/copy.test.ts` | Korean-first UI copy and English allowlist. |
