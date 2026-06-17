@@ -220,6 +220,33 @@ func managedContentExists(managedDir string, body []byte) bool {
 	return false
 }
 
+func dotfileFingerprint(targetPath string) string {
+	info, err := os.Lstat(targetPath)
+	if os.IsNotExist(err) {
+		return "missing"
+	}
+	if err != nil {
+		return "error"
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(targetPath)
+		if err != nil {
+			return "symlink:error"
+		}
+		sum := sha256.Sum256([]byte(target))
+		return "symlink:" + hex.EncodeToString(sum[:])
+	}
+	if !info.Mode().IsRegular() {
+		return "node:" + info.Mode().Type().String()
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		return "file:error"
+	}
+	sum := sha256.Sum256(body)
+	return "file:" + hex.EncodeToString(sum[:])
+}
+
 func managedPathOwnedByResource(managedDir string, candidate string) bool {
 	relative, err := filepath.Rel(managedDir, candidate)
 	if err != nil {

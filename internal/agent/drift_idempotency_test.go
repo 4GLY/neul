@@ -221,3 +221,19 @@ func TestDriftIdempotencyKey_changesWhenDesiredStateFingerprintChanges(t *testin
 		})
 	}
 }
+
+func TestDriftIdempotencyKey_changesWhenObservedFingerprintChanges(t *testing.T) {
+	resources := []DesiredResource{
+		{ID: "resource_dotfile", Kind: "dotfile", Name: "~/.config/neul-test.txt", DesiredVersion: 1, Spec: map[string]interface{}{"path": "~/.config/neul-test.txt", "content": "hello", "mode": "0644", "applyMode": "copy", "targetSegment": "base"}},
+	}
+	first := driftIdempotencyKey("machine_1", resources, []ResourceEvent{
+		{ResourceID: "resource_dotfile", Status: "drifted", Message: "dotfile_drifted", DesiredVersion: 1, Fingerprint: "sha256:first"},
+	})
+	second := driftIdempotencyKey("machine_1", resources, []ResourceEvent{
+		{ResourceID: "resource_dotfile", Status: "drifted", Message: "dotfile_drifted", DesiredVersion: 1, Fingerprint: "sha256:second"},
+	})
+
+	if first == second {
+		t.Fatalf("driftIdempotencyKey() = %q twice, want different keys for changed observed fingerprint", first)
+	}
+}

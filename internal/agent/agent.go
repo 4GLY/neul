@@ -181,6 +181,7 @@ func driftIdempotencyKey(machineID string, resources []DesiredResource, events [
 			event.Status,
 			strconv.Itoa(event.DesiredVersion),
 			strconv.Itoa(event.AppliedVersion),
+			event.Fingerprint,
 		}, ":"))
 	}
 	sort.Strings(fingerprints)

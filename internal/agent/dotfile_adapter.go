@@ -81,7 +81,7 @@ func CheckDotfile(_ context.Context, homeDir string, resource DesiredResource) R
 		return blockedDotfileEvent(resource, dotfiles.MessageForError(err))
 	}
 	if !inSync {
-		return ResourceEvent{ResourceID: resource.ID, Status: "drifted", Message: dotfiles.MessageDrifted, DesiredVersion: resource.DesiredVersion}
+		return ResourceEvent{ResourceID: resource.ID, Status: "drifted", Message: dotfiles.MessageDrifted, DesiredVersion: resource.DesiredVersion, Fingerprint: dotfileFingerprint(targetPath)}
 	}
 	return ResourceEvent{ResourceID: resource.ID, Status: "in_sync", Message: "dotfile check", DesiredVersion: resource.DesiredVersion, AppliedVersion: resource.DesiredVersion}
 }

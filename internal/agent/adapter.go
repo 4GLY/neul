@@ -20,6 +20,7 @@ type ResourceEvent struct {
 	Message        string `json:"message"`
 	DesiredVersion int    `json:"desiredVersion"`
 	AppliedVersion int    `json:"appliedVersion"`
+	Fingerprint    string `json:"-"`
 }
 
 type PackageAdapter interface {
