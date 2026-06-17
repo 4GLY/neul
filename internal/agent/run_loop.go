@@ -17,6 +17,7 @@ type RunOptions struct {
 	ConfigReloader ConfigReloader
 	Logger         *slog.Logger
 	MaxBackoff     time.Duration
+	StatusPath     string
 }
 
 func (c *Client) Run(ctx context.Context, options RunOptions) error {
@@ -34,6 +35,7 @@ func (c *Client) Run(ctx context.Context, options RunOptions) error {
 	}
 	backoff := c.config.HeartbeatInterval
 	lastFailureKind := ""
+	var lastSuccessAt time.Time
 	consecutiveFailures := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -46,11 +48,15 @@ func (c *Client) Run(ctx context.Context, options RunOptions) error {
 				c.applyConfig(config)
 			}
 		}
+		attemptedAt := time.Now().UTC()
 		if err := c.Tick(ctx); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
 			kind := classifyTickError(err)
+			if statusErr := c.writeStatus(options.StatusPath, attemptedAt, lastSuccessAt, err); statusErr != nil {
+				logger.Warn("agent status write failed", "error", statusErr)
+			}
 			consecutiveFailures++
 			if kind != lastFailureKind {
 				logger.Warn("agent tick failed", "kind", kind, "error", err, "retry_in", backoff)
@@ -72,6 +78,10 @@ func (c *Client) Run(ctx context.Context, options RunOptions) error {
 		consecutiveFailures = 0
 		lastFailureKind = ""
 		backoff = c.config.HeartbeatInterval
+		lastSuccessAt = attemptedAt
+		if statusErr := c.writeStatus(options.StatusPath, attemptedAt, lastSuccessAt, nil); statusErr != nil {
+			logger.Warn("agent status write failed", "error", statusErr)
+		}
 		if err := delay(ctx, c.config.HeartbeatInterval); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil

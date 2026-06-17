@@ -261,6 +261,104 @@ func TestRunLoop_whenFailureKindChanges_logsEachKindAndRecovery(t *testing.T) {
 	}
 }
 
+func TestRunLoop_whenStatusWriteFails_logsAndKeepsHeartbeating(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var heartbeatCount atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/agent/heartbeat":
+			heartbeatCount.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+		case "/api/agent/desired-state":
+			_, _ = w.Write([]byte(`{"resources":[]}`))
+		case "/api/agent/commands":
+			_, _ = w.Write([]byte(`{"commands":[]}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	// Point the status path at a child of a regular file so every status write
+	// fails (MkdirAll cannot create a directory under a file).
+	notADir := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(notADir, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	statusPath := filepath.Join(notADir, "status.json")
+
+	var logBuffer bytes.Buffer
+	client := New(Config{
+		ServerURL:         server.URL,
+		MachineID:         "machine_status_fail",
+		MachineToken:      "mtn_status_fail",
+		HeartbeatInterval: time.Millisecond,
+	})
+
+	if err := client.Run(ctx, RunOptions{
+		StatusPath: statusPath,
+		Delay: func(ctx context.Context, delay time.Duration) error {
+			if heartbeatCount.Load() == 3 {
+				cancel()
+			}
+			return immediateDelay(ctx, delay)
+		},
+		Logger: slog.New(slog.NewTextHandler(&logBuffer, nil)),
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want status write failures to be tolerated", err)
+	}
+	if heartbeatCount.Load() != 3 {
+		t.Fatalf("heartbeatCount = %d, want loop to keep heartbeating despite status write errors", heartbeatCount.Load())
+	}
+	if !strings.Contains(logBuffer.String(), "agent status write failed") {
+		t.Fatalf("logs = %s, want status write failure warning", logBuffer.String())
+	}
+}
+
+func TestRunLoop_whenStatusWriteFailsOnFailurePath_keepsRetrying(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Point the status path at a child of a regular file so every status write
+	// fails on the failure path too.
+	notADir := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(notADir, []byte("blocker"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	statusPath := filepath.Join(notADir, "status.json")
+
+	var delayCount int
+	var logBuffer bytes.Buffer
+	client := New(Config{
+		ServerURL:         "http://127.0.0.1:1",
+		MachineID:         "machine_status_fail_failure",
+		MachineToken:      "mtn_status_fail_failure",
+		HeartbeatInterval: time.Millisecond,
+	})
+
+	if err := client.Run(ctx, RunOptions{
+		StatusPath: statusPath,
+		Delay: func(ctx context.Context, delay time.Duration) error {
+			delayCount++
+			if delayCount == 3 {
+				cancel()
+			}
+			return immediateDelay(ctx, delay)
+		},
+		Logger: slog.New(slog.NewTextHandler(&logBuffer, nil)),
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want status write failures to be tolerated on failure path", err)
+	}
+	if delayCount != 3 {
+		t.Fatalf("delayCount = %d, want loop to keep retrying despite status write errors", delayCount)
+	}
+	if !strings.Contains(logBuffer.String(), "agent status write failed") {
+		t.Fatalf("logs = %s, want status write failure warning", logBuffer.String())
+	}
+}
+
 func TestGrowBackoff_whenCurrentWouldOverflow_capsAtMaximum(t *testing.T) {
 	maxBackoff := time.Hour
 	if got := growBackoff(time.Duration(1<<62), maxBackoff); got != maxBackoff {

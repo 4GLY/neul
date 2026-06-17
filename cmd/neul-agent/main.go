@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/4gly/neul/internal/agent"
@@ -15,6 +16,7 @@ import (
 func main() {
 	once := flag.Bool("once", false, "run one agent tick")
 	configPath := flag.String("config", "", "agent config path")
+	statusPath := flag.String("status", "", "agent status receipt path")
 	flag.Parse()
 	if *configPath == "" {
 		_, _ = fmt.Fprintln(os.Stderr, "--config is required")
@@ -25,11 +27,14 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	if *statusPath == "" {
+		*statusPath = filepath.Join(filepath.Dir(*configPath), "status.json")
+	}
 	config.EnablePackageAdapters = true
 	client := agent.New(config)
 	ctx := context.Background()
 	if *once {
-		if err := client.Tick(ctx); err != nil {
+		if err := client.TickWithStatus(ctx, *statusPath); err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -40,7 +45,8 @@ func main() {
 	defer stop()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := client.Run(ctx, agent.RunOptions{
-		Logger: logger,
+		Logger:     logger,
+		StatusPath: *statusPath,
 		ConfigReloader: func() (agent.Config, error) {
 			config, err := agent.LoadConfig(*configPath)
 			if err != nil {

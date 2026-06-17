@@ -10,45 +10,71 @@ fail() {
 }
 
 require_text() {
-	file=$1
-	text=$2
-	label=$3
-	if ! grep -Fq "$text" "$file"; then
-		fail "$label: missing '$text' in $file"
+	rt_file=$1
+	rt_text=$2
+	rt_label=$3
+	if ! grep -Fq -- "$rt_text" "$rt_file"; then
+		fail "$rt_label: missing '$rt_text' in $rt_file"
+	fi
+}
+
+require_executable() {
+	re_file=$1
+	re_label=$2
+	if [ ! -x "$re_file" ]; then
+		fail "$re_label: missing executable $re_file"
 	fi
 }
 
 require_absent_between() {
-	file=$1
-	start=$2
-	end=$3
-	text=$4
-	label=$5
-	require_text "$file" "$start" "$label start marker"
-	require_text "$file" "$end" "$label end marker"
-	if awk -v start="$start" -v end="$end" -v text="$text" '
+	rab_file=$1
+	rab_start=$2
+	rab_end=$3
+	rab_text=$4
+	rab_label=$5
+	require_text "$rab_file" "$rab_start" "$rab_label start marker"
+	require_text "$rab_file" "$rab_end" "$rab_label end marker"
+	if awk -v start="$rab_start" -v end="$rab_end" '
 		index($0, start) { in_section = 1; seen_start = 1; next }
 		in_section && index($0, end) { in_section = 0; seen_end = 1 }
-		in_section && index($0, text) { found = 1 }
-		END { exit (seen_start && seen_end && found) ? 0 : 1 }
-	' "$file"; then
-		fail "$label: '$text' found between '$start' and '$end' in $file"
+		in_section { print }
+		END { exit (seen_start && seen_end) ? 0 : 1 }
+	' "$rab_file" | grep -Fq -- "$rab_text"; then
+		fail "$rab_label: '$rab_text' found between '$rab_start' and '$rab_end' in $rab_file"
 	fi
 }
 
 packaged_primary_flow() {
+	require_executable "scripts/build-macos-dev-pkg.sh" "macOS dev package builder"
+	require_text "scripts/build-macos-dev-pkg.sh" "pkgbuild" "macOS dev package builder uses pkgbuild"
+	require_text "scripts/build-macos-dev-pkg.sh" "GOOS=darwin" "macOS dev package builder targets darwin"
+	require_text "scripts/build-macos-dev-pkg.sh" "unsupported: macOS dev package build requires macOS" "macOS dev package builder non-macOS guard"
+	require_text "scripts/build-macos-dev-pkg.sh" "/usr/local/bin/neul" "macOS dev package builder neul path"
+	require_text "scripts/build-macos-dev-pkg.sh" "/usr/local/libexec/neul-agent" "macOS dev package builder neul-agent path"
+	require_text "scripts/build-macos-dev-pkg.sh" "signature: unsigned" "macOS dev package builder unsigned evidence"
 	require_text "docs/mvp.md" "packaged neul client" "MVP packaged client primary path"
-	require_text "docs/mvp.md" "macOS: Homebrew tap 또는 signed .pkg" "MVP macOS package format"
+	require_text "docs/mvp.md" "scripts/build-macos-dev-pkg.sh" "MVP macOS dev package builder"
+	require_text "docs/mvp.md" "macOS local QA: unsigned dev .pkg" "MVP macOS dev package format"
+	require_text "docs/mvp.md" "Developer ID Application and" "MVP macOS production signing certificate"
+	require_text "docs/mvp.md" "Developer ID Installer certificates, notarization, and stapling" "MVP macOS production notarization limits"
 	require_text "docs/mvp.md" "Linux: Debian/Ubuntu .deb와 tarball" "MVP Linux package format"
+	require_text "docs/mvp.md" "/usr/local/bin/neul" "MVP package neul path"
+	require_text "docs/mvp.md" "/usr/local/libexec/neul-agent" "MVP package neul-agent path"
 	require_text "docs/mvp.md" "neul://enroll?server=" "MVP browser deep-link enroll handoff"
 	require_text "docs/mvp.md" "local callback" "MVP local callback approval"
-	require_text "web/src/copy.ts" "macOS: Homebrew tap 또는 signed .pkg" "web macOS install instruction"
+	require_text "web/src/copy.ts" "macOS local QA: unsigned dev .pkg" "web macOS dev install instruction"
+	require_text "web/src/copy.ts" "Production macOS: Developer ID Application/Installer, notarization, stapling" "web macOS production signing instruction"
 	require_text "web/src/copy.ts" "Linux: Debian/Ubuntu .deb 또는 tarball" "web Linux install instruction"
 	require_text "web/src/copy.ts" "neul enroll --server <origin>" "web target enroll command"
 	require_text "web/src/copy.ts" "fallback/debug 명령으로 등록하세요" "web fallback/debug instruction"
 	require_text "web/src/onboardingWizard.test.tsx" "not.toContain(\"--pair\")" "web hides pair token in target command"
 	require_text "internal/domain/contracts.md" "Primary packaged client onboarding flow" "contract packaged onboarding heading"
+	require_text "internal/domain/contracts.md" "scripts/build-macos-dev-pkg.sh" "contract macOS dev package builder"
 	require_text "internal/domain/contracts.md" "neul client install" "contract packaged client install"
+	require_text "internal/domain/contracts.md" "/usr/local/bin/neul" "contract package neul path"
+	require_text "internal/domain/contracts.md" "/usr/local/libexec/neul-agent" "contract package neul-agent path"
+	require_text "internal/domain/contracts.md" "Developer ID Application and Developer ID Installer certificates" "contract production signing certificates"
+	require_text "internal/domain/contracts.md" "notarization, and stapling" "contract production notarization limits"
 	require_text "internal/domain/contracts.md" "neul://enroll?server=" "contract browser deep-link handoff"
 }
 
@@ -61,7 +87,11 @@ fallback_debug_separation() {
 	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "contract primary flow"
 	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "README primary flow"
 	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "MVP primary pair-token command"
+	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "README primary pair-token command"
 	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "contract primary pair-token command"
+	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "MVP primary pair flag"
+	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "README primary pair flag"
+	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "contract primary pair flag"
 	require_text "docs/qa/agent-onboarding.md" "## Fallback/debug checkout-local enrollment" "QA fallback section"
 }
 

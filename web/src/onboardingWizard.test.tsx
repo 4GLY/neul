@@ -21,7 +21,10 @@ describe("OnboardingWizard", () => {
 		expect(calls[0]).toEqual({ url: "/api/pair/init", method: "POST" });
 		expect(document.body.textContent).toContain("명령 실행 대기 중");
 		expect(document.body.textContent).toContain(
-			"macOS: Homebrew tap 또는 signed .pkg",
+			"macOS local QA: unsigned dev .pkg",
+		);
+		expect(document.body.textContent).toContain(
+			"Production macOS: Developer ID Application/Installer, notarization, stapling",
 		);
 		expect(document.body.textContent).toContain(
 			"Linux: Debian/Ubuntu .deb 또는 tarball",

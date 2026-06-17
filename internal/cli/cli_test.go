@@ -106,8 +106,15 @@ func TestAgentStatus_readsLocalConfigAndStatusFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
-	if !strings.Contains(stdout.String(), "machine_1") || !strings.Contains(stdout.String(), "running") {
-		t.Fatalf("stdout = %s, want machine status", stdout.String())
+	for _, want := range []string{
+		"Machine: machine_1\n",
+		"LaunchAgent: ",
+		"Heartbeat: 2026-06-05T13:00:00Z\n",
+		"Last error: none\n",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %s, want %q", stdout.String(), want)
+		}
 	}
 }
 

@@ -94,17 +94,23 @@ Primary packaged client onboarding flow:
 
 1. Owner session already exists.
 2. Web tells the user to install the neul client install package.
-   macOS uses Homebrew tap or signed `.pkg`; Linux uses Debian/Ubuntu `.deb`
-   and tarball.
-3. The packaged client runs `neul enroll --server <origin>`, opens browser
+   macOS local QA uses an unsigned dev `.pkg`; production macOS distribution
+   requires Developer ID Application and Developer ID Installer certificates,
+   notarization, and stapling. Linux uses Debian/Ubuntu `.deb` and tarball.
+   Local macOS dev packages are built with `scripts/build-macos-dev-pkg.sh`;
+   Homebrew tap distribution remains future/alternate unless fully implemented.
+3. The macOS `.pkg` installs `/usr/local/bin/neul` and
+   `/usr/local/libexec/neul-agent`; LaunchAgent registration remains a
+   per-user `neul agent install` action.
+4. The packaged client runs `neul enroll --server <origin>`, opens browser
    approval, and starts a local callback; local callback binds to 127.0.0.1 only.
-4. After owner approval, the server creates a one-time pair token and returns it
+5. After owner approval, the server creates a one-time pair token and returns it
    through the local callback or `neul://enroll?server=<origin>&pair=<token>`.
-5. CLI claims the pair token, writes local config with mode `0600`, and starts
+6. CLI claims the pair token, writes local config with mode `0600`, and starts
    the user-level agent.
-6. Web moves from `claimed_waiting_heartbeat` to `connected` only after the
+7. Web moves from `claimed_waiting_heartbeat` to `connected` only after the
    first heartbeat makes the machine visible in `GET /api/dashboard`.
-7. If the claimed machine does not heartbeat within 120 seconds, web shows
+8. If the claimed machine does not heartbeat within 120 seconds, web shows
    `agent_not_responding`.
 
 First-run states are `not_logged_in`, `waiting_for_browser_approval`,
@@ -154,6 +160,17 @@ from the repository checkout. Until packaged approval ships, the web wizard
 also shows this executable command in a separate fallback/debug block so a
 first-time owner can still claim the invite and reach connected state. That
 command is not the primary product UX.
+
+Package QA may use the installed binary equivalent,
+`neul agent enroll --server <origin> --pair <token> --connect-once`, followed by
+`neul agent install`. Legacy/debug compatibility keeps
+`neul init --pair --server`; neither command may replace the primary
+`neul enroll --server <origin>` product command.
+
+Unsigned dev `.pkg` artifacts are local-testing only. Contracts, docs, and
+validation must not imply they are production-ready, signed, notarized, or
+stapled. Production macOS packages require Developer ID Application and
+Developer ID Installer certificates, notarization, and stapling.
 
 `POST /api/pair/init` returns:
 

@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+var agentServiceGOOS = runtime.GOOS
+
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("command is required")
@@ -66,6 +68,12 @@ func runAgent(args []string, stdout io.Writer) error {
 		return runAgentEnroll(args[1:], stdout)
 	case "install":
 		return runAgentInstall(args[1:], stdout)
+	case "start":
+		return runAgentStart(args[1:], stdout)
+	case "reset":
+		return runAgentReset(args[1:], stdout)
+	case "uninstall":
+		return runAgentUninstall(args[1:], stdout)
 	case "status":
 		return runAgentStatus(args[1:], stdout)
 	case "logs":
@@ -76,67 +84,31 @@ func runAgent(args []string, stdout io.Writer) error {
 }
 
 func runAgentInstall(args []string, stdout io.Writer) error {
-	flags := flag.NewFlagSet("agent install", flag.ContinueOnError)
+	return runAgentInstallCommand(args, stdout)
+}
+
+func runAgentStart(args []string, _ io.Writer) error {
+	flags := flag.NewFlagSet("agent start", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	dryRun := flags.Bool("dry-run", false, "preview service install")
 	configPath := flags.String("config", defaultConfigPath(), "config path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if !*dryRun {
-		return errors.New("real service installation is out of MVP; pass --dry-run")
-	}
 	if _, err := readConfig(*configPath); err != nil {
 		return err
 	}
-	serviceKind := "systemd"
-	if runtime.GOOS == "darwin" {
-		serviceKind = "launchd"
+	if agentServiceGOOS != "darwin" {
+		return fmt.Errorf("agent start is unsupported on %s", agentServiceGOOS)
 	}
-	_, err := fmt.Fprintf(stdout, "Dry run: would install neul-agent using %s with config %s\n", serviceKind, *configPath)
-	return err
+	return errors.New("agent start is not implemented")
 }
 
 func runAgentStatus(args []string, stdout io.Writer) error {
-	flags := flag.NewFlagSet("agent status", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", defaultConfigPath(), "config path")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	config, err := readConfig(*configPath)
-	if err != nil {
-		return err
-	}
-	statusPath := filepath.Join(filepath.Dir(*configPath), "status.json")
-	statusBody := "unknown"
-	if body, err := os.ReadFile(statusPath); err == nil {
-		statusBody = strings.TrimSpace(string(body))
-	}
-	_, err = fmt.Fprintf(stdout, "Machine: %s\nStatus: %s\n", config.MachineID, statusBody)
-	return err
+	return runAgentStatusCommand(args, stdout)
 }
 
 func runAgentLogs(args []string, stdout io.Writer) error {
-	flags := flag.NewFlagSet("agent logs", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", defaultConfigPath(), "config path")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if _, err := readConfig(*configPath); err != nil {
-		return err
-	}
-	logPath := filepath.Join(filepath.Dir(*configPath), "agent.log")
-	body, err := os.ReadFile(logPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return errors.New("agent log file was not found")
-		}
-		return fmt.Errorf("read logs: %w", err)
-	}
-	_, err = stdout.Write(body)
-	return err
+	return runAgentLogsCommand(args, stdout)
 }
 
 type claimResponse struct {
