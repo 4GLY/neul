@@ -76,3 +76,36 @@ func TestRepairDrift_rejectsSelectedResourceThatIsNoLongerDrifted(t *testing.T) 
 		t.Fatalf("command count = %d, want 0", commandCount)
 	}
 }
+
+func TestRepairDrift_queuesLatestBlockedResourceForRetry(t *testing.T) {
+	now := time.Date(2026, 6, 5, 13, 0, 0, 0, time.UTC)
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouter(t, db, now)
+	seedMachine(t, db, "machine_blocked_retry", "blocked retry", now.Add(-time.Minute))
+	seedResource(t, db, "resource_blocked", "dotfile", "~/.config/neul-test.txt", 1)
+	seedReconcileEvent(t, db, "machine_blocked_retry", "resource_blocked", "drifted", 1, 0)
+	seedReconcileEvent(t, db, "machine_blocked_retry", "resource_blocked", "blocked", 1, 0)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/machines/machine_blocked_retry/repair-drift", strings.NewReader(`{"resourceIds":["resource_blocked"]}`))
+	request.AddCookie(cookie)
+	request.Header.Set("Idempotency-Key", "repair-blocked-retry-1")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	var payloadJSON string
+	if err := db.QueryRowContext(context.Background(), `SELECT payload_json FROM agent_commands WHERE machine_id = ? AND command_type = 'repair_drift'`, "machine_blocked_retry").Scan(&payloadJSON); err != nil {
+		t.Fatalf("query command payload error = %v", err)
+	}
+	var payload struct {
+		ResourceIDs []string `json:"resourceIds"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("payload JSON error = %v", err)
+	}
+	if len(payload.ResourceIDs) != 1 || payload.ResourceIDs[0] != "resource_blocked" {
+		t.Fatalf("payload resourceIds = %v, want blocked resource retry", payload.ResourceIDs)
+	}
+}

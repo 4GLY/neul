@@ -59,6 +59,63 @@ func TestRepairDrift_reportsMissingResource_whenPayloadContainsUnknownID(t *test
 	}
 }
 
+func TestRepairDrift_appliesRequestedDotfileResource(t *testing.T) {
+	// Given
+	adapter := &recordingCommandAdapter{}
+	homeDir := t.TempDir()
+	reports, _ := runCommandReconcileTick(t, adapter, commandReconcileServerConfig{
+		resources: []DesiredResource{dotfileCommandResource("resource_dotfile", "~/.config/neul/repair.conf")},
+		commands:  []agentCommand{repairDriftCommand("command_repair_dotfile", []string{"resource_dotfile"})},
+		homeDir:   homeDir,
+	})
+
+	// Then
+	report := requireCommandReport(t, reports, "command_repair_dotfile", "finished", 1)
+	event := report.Events[0]
+	if event.ResourceID != "resource_dotfile" || event.Status != "in_sync" {
+		t.Fatalf("event = %+v, want resource_dotfile in_sync", event)
+	}
+	body, err := os.ReadFile(filepath.Join(homeDir, ".config", "neul", "repair.conf"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(body) != "desired command content\n" {
+		t.Fatalf("content = %q, want desired command content", string(body))
+	}
+}
+
+func TestRepairDrift_restoresManagedCopyDotfileAfterManualEdit(t *testing.T) {
+	// Given
+	adapter := &recordingCommandAdapter{}
+	homeDir := t.TempDir()
+	resource := dotfileCommandResource("resource_dotfile", "~/.config/neul/repair.conf")
+	first := ApplyDotfile(context.Background(), homeDir, resource)
+	requireDotfileEvent(t, first, "in_sync", "dotfile_applied", 1)
+	targetPath := filepath.Join(homeDir, ".config", "neul", "repair.conf")
+	if err := os.WriteFile(targetPath, []byte("manual drift\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	reports, _ := runCommandReconcileTick(t, adapter, commandReconcileServerConfig{
+		resources: []DesiredResource{resource},
+		commands:  []agentCommand{repairDriftCommand("command_repair_dotfile", []string{"resource_dotfile"})},
+		homeDir:   homeDir,
+	})
+
+	// Then
+	report := requireCommandReport(t, reports, "command_repair_dotfile", "finished", 1)
+	event := report.Events[0]
+	if event.ResourceID != "resource_dotfile" || event.Status != "in_sync" {
+		t.Fatalf("event = %+v, want resource_dotfile in_sync", event)
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(body) != "desired command content\n" {
+		t.Fatalf("content = %q, want restored desired command content", string(body))
+	}
+}
+
 func TestAgentTick_ReconcileNow_appliesAllBrewResourcesAndIgnoresPayloadResourceIDs(t *testing.T) {
 	// Given
 	adapter := &recordingCommandAdapter{}
@@ -78,18 +135,18 @@ func TestAgentTick_ReconcileNow_emitsPackageEventOnly_whenDesiredStateIncludesDo
 	reports, _ := runCommandReconcileTick(t, adapter, commandReconcileServerConfig{
 		resources: []DesiredResource{brewCommandResource("resource_brew"), blockedDotfileCommandResource("resource_dotfile")},
 		commands:  []agentCommand{reconcileNowCommand("command_reconcile_package_only", nil)},
+		homeDir:   t.TempDir(),
 	})
 
 	// Then
 	requireAppliedNames(t, adapter, []string{"resource_brew"})
-	report := requireCommandReport(t, reports, "command_reconcile_package_only", "finished", 1)
+	report := requireCommandReport(t, reports, "command_reconcile_package_only", "finished", 2)
 	if report.Events[0].ResourceID != "resource_brew" {
-		t.Fatalf("events = %+v, want only brew package event", report.Events)
+		t.Fatalf("events = %+v, want brew package first", report.Events)
 	}
-	for _, event := range report.Events {
-		if event.ResourceID == "resource_dotfile" || strings.Contains(event.Message, "path_not_allowed") {
-			t.Fatalf("events = %+v, want no dotfile blocked command event", report.Events)
-		}
+	dotfile := report.Events[1]
+	if dotfile.ResourceID != "resource_dotfile" || dotfile.Status != "blocked" || !strings.Contains(dotfile.Message, "path_not_allowed") {
+		t.Fatalf("dotfile event = %+v, want blocked path_not_allowed", dotfile)
 	}
 }
 
@@ -178,6 +235,7 @@ type commandReconcileServerConfig struct {
 	commands               []agentCommand
 	removeAfterReport      bool
 	failFirstCommandReport bool
+	homeDir                string
 }
 
 type observedCommandReport struct {
@@ -189,7 +247,9 @@ func runCommandReconcileTick(t *testing.T, adapter *recordingCommandAdapter, con
 	t.Helper()
 	server, reports, keys := newCommandReconcileTestServer(t, config)
 	defer server.Close()
-	if err := NewWithAdapters(commandReconcileConfig(server.URL), adapter).Tick(context.Background()); err != nil {
+	clientConfig := commandReconcileConfig(server.URL)
+	clientConfig.HomeDir = config.homeDir
+	if err := NewWithAdapters(clientConfig, adapter).Tick(context.Background()); err != nil {
 		t.Fatalf("Tick() error = %v", err)
 	}
 	return *reports, *keys
@@ -265,6 +325,22 @@ func brewCommandResource(id string) DesiredResource {
 
 func blockedDotfileCommandResource(id string) DesiredResource {
 	return DesiredResource{ID: id, Kind: "dotfile", Name: "/etc/hosts", DesiredVersion: 1, Spec: map[string]interface{}{"path": "/etc/hosts", "content": "127.0.0.1 localhost\n"}}
+}
+
+func dotfileCommandResource(id string, path string) DesiredResource {
+	return DesiredResource{
+		ID:             id,
+		Kind:           "dotfile",
+		Name:           path,
+		DesiredVersion: 1,
+		Spec: map[string]interface{}{
+			"path":          path,
+			"content":       "desired command content\n",
+			"mode":          "0600",
+			"applyMode":     "copy",
+			"targetSegment": "base",
+		},
+	}
 }
 
 func repairDriftCommand(id string, resourceIDs []string) agentCommand {

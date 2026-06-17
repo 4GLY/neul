@@ -3,10 +3,26 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
+
+func TestMigrationNamesUseEmbeddedSQLFiles(t *testing.T) {
+	names, err := migrationNames()
+	if err != nil {
+		t.Fatalf("migrationNames() error = %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("migrationNames() returned no embedded SQL files")
+	}
+	for _, name := range names {
+		if !strings.HasSuffix(name, ".sql") || strings.Contains(name, "/") {
+			t.Fatalf("migration name = %q, want embedded SQL file name", name)
+		}
+	}
+}
 
 func TestMigrationsCreateMvpTables(t *testing.T) {
 	db := openTestDB(t)

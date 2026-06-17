@@ -1,0 +1,15 @@
+.git
+.demo
+.data
+node_modules
+web/node_modules
+web/dist
+web/test-results
+web/playwright-report
+web/blob-report
+web/.vite
+*.pkg
+*.tar
+*.tgz
+tmp
+coverage

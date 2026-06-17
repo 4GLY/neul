@@ -57,6 +57,35 @@ func ApplyDotfile(_ context.Context, homeDir string, resource DesiredResource) R
 	return ResourceEvent{ResourceID: resource.ID, Status: "in_sync", Message: dotfiles.MessageApplied, DesiredVersion: resource.DesiredVersion, AppliedVersion: resource.DesiredVersion}
 }
 
+func CheckDotfile(_ context.Context, homeDir string, resource DesiredResource) ResourceEvent {
+	if homeDir == "" {
+		return blockedDotfileEvent(resource, dotfiles.MessageHomeUnavailable)
+	}
+	if resource.Spec == nil {
+		return blockedDotfileEvent(resource, dotfiles.MessageInvalidSpec)
+	}
+	normalizedPath, err := dotfiles.NormalizeAllowedPathSyntax(homeDir, stringSpec(resource, "path"))
+	if err != nil {
+		return blockedDotfileEvent(resource, dotfiles.MessageForError(err))
+	}
+	spec, err := parseDotfileSpec(resource)
+	if err != nil {
+		return blockedDotfileEvent(resource, dotfiles.MessageInvalidSpec)
+	}
+	targetPath, err := dotfiles.AbsoluteTarget(homeDir, normalizedPath)
+	if err != nil {
+		return blockedDotfileEvent(resource, dotfiles.MessageForError(err))
+	}
+	inSync, err := dotfileInSync(homeDir, targetPath, resource.ID, spec)
+	if err != nil {
+		return blockedDotfileEvent(resource, dotfiles.MessageForError(err))
+	}
+	if !inSync {
+		return ResourceEvent{ResourceID: resource.ID, Status: "drifted", Message: dotfiles.MessageDrifted, DesiredVersion: resource.DesiredVersion}
+	}
+	return ResourceEvent{ResourceID: resource.ID, Status: "in_sync", Message: "dotfile check", DesiredVersion: resource.DesiredVersion, AppliedVersion: resource.DesiredVersion}
+}
+
 func parseDotfileSpec(resource DesiredResource) (dotfileSpec, error) {
 	if resource.Spec == nil || resource.ID == "" {
 		return dotfileSpec{}, errors.New("dotfile spec is required")
@@ -140,7 +169,7 @@ func handleExistingCopyTarget(homeDir string, targetPath string, spec dotfileSpe
 		return dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("read existing target: %w", err))
 	}
 	if string(body) != spec.content {
-		if !managedContentExists(managedDir, body) {
+		if !managedContentExists(managedDir, body) && !managedContentExists(managedDir, []byte(spec.content)) {
 			return dotfiles.NewPolicyError(dotfiles.MessageConflictExistingFile, errors.New("target has different content"))
 		}
 		if err := writeFileAtomically(homeDir, targetPath, []byte(spec.content), spec.mode); err != nil {
@@ -198,4 +227,55 @@ func applyDotfileSymlink(homeDir string, targetPath string, resourceID string, s
 		return err
 	}
 	return pruneManagedSiblings(managedDir, managedPath)
+}
+
+func dotfileInSync(homeDir string, targetPath string, resourceID string, spec dotfileSpec) (bool, error) {
+	info, err := os.Lstat(targetPath)
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("lstat target: %w", err))
+	}
+	switch spec.applyMode {
+	case "copy":
+		return copiedDotfileInSync(targetPath, spec, info)
+	case "symlink":
+		return linkedDotfileInSync(homeDir, targetPath, resourceID, spec, info)
+	default:
+		return false, dotfiles.NewPolicyError(dotfiles.MessageInvalidSpec, fmt.Errorf("unsupported apply mode %q", spec.applyMode))
+	}
+}
+
+func copiedDotfileInSync(targetPath string, spec dotfileSpec, info os.FileInfo) (bool, error) {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || hasMultipleLinks(info) {
+		return false, nil
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		return false, dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("read target: %w", err))
+	}
+	return string(body) == spec.content && info.Mode().Perm() == spec.mode, nil
+}
+
+func linkedDotfileInSync(homeDir string, targetPath string, resourceID string, spec dotfileSpec, info os.FileInfo) (bool, error) {
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, nil
+	}
+	currentTarget, err := os.Readlink(targetPath)
+	if err != nil {
+		return false, dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("readlink target: %w", err))
+	}
+	managedDir, err := managedDotfileDir(homeDir, resourceID, spec)
+	if err != nil {
+		return false, err
+	}
+	if !managedPathOwnedByResource(managedDir, currentTarget) {
+		return false, nil
+	}
+	body, err := os.ReadFile(targetPath)
+	if err != nil {
+		return false, dotfiles.NewPolicyError(dotfiles.MessageWriteFailed, fmt.Errorf("read target: %w", err))
+	}
+	return string(body) == spec.content, nil
 }

@@ -69,7 +69,7 @@ func TestDotfileCopy_appliesFile_whenTargetIsAllowlisted(t *testing.T) {
 		},
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	event := ApplyDotfile(context.Background(), homeDir, resource)
 
 	requireDotfileEvent(t, event, "in_sync", "dotfile_applied", 7)
 	targetPath := filepath.Join(homeDir, ".zshrc")
@@ -104,7 +104,7 @@ func TestDotfileSymlink_appliesManagedSymlink_whenTargetIsAllowlisted(t *testing
 		},
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	event := ApplyDotfile(context.Background(), homeDir, resource)
 
 	requireDotfileEvent(t, event, "in_sync", "dotfile_applied", 3)
 	targetPath := filepath.Join(homeDir, ".gitconfig")
@@ -142,7 +142,7 @@ func TestDotfileSymlink_preservesExistingTempNameFile_whenReplacingLink(t *testi
 		Spec:           dotfileResourceSpec("~/.config/neul/link.conf", "symlink"),
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	event := ApplyDotfile(context.Background(), homeDir, resource)
 
 	requireDotfileEvent(t, event, "in_sync", "dotfile_applied", 4)
 	linkTarget, err := os.Readlink(filepath.Join(targetDir, "link.conf"))
@@ -169,12 +169,12 @@ func TestDotfileCopy_updatesFile_whenExistingTargetWasManagedByAgent(t *testing.
 		DesiredVersion: 1,
 		Spec:           dotfileResourceSpec("~/.zshrc", "copy"),
 	}
-	first := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	first := ApplyDotfile(context.Background(), homeDir, resource)
 	requireDotfileEvent(t, first, "in_sync", "dotfile_applied", 1)
 
 	resource.DesiredVersion = 2
 	resource.Spec["content"] = "desired v2\n"
-	second := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	second := ApplyDotfile(context.Background(), homeDir, resource)
 
 	requireDotfileEvent(t, second, "in_sync", "dotfile_applied", 2)
 	body, err := os.ReadFile(filepath.Join(homeDir, ".zshrc"))
@@ -194,7 +194,7 @@ func TestDotfileSymlink_updatesLink_whenExistingTargetWasManagedByAgent(t *testi
 		DesiredVersion: 1,
 		Spec:           dotfileResourceSpec("~/.gitconfig", "symlink"),
 	}
-	first := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	first := ApplyDotfile(context.Background(), homeDir, resource)
 	requireDotfileEvent(t, first, "in_sync", "dotfile_applied", 1)
 	firstTarget, err := os.Readlink(filepath.Join(homeDir, ".gitconfig"))
 	if err != nil {
@@ -203,7 +203,7 @@ func TestDotfileSymlink_updatesLink_whenExistingTargetWasManagedByAgent(t *testi
 
 	resource.DesiredVersion = 2
 	resource.Spec["content"] = "desired v2\n"
-	second := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+	second := ApplyDotfile(context.Background(), homeDir, resource)
 
 	requireDotfileEvent(t, second, "in_sync", "dotfile_applied", 2)
 	secondTarget, err := os.Readlink(filepath.Join(homeDir, ".gitconfig"))
@@ -233,8 +233,8 @@ func TestDotfile_reapplySameDesiredState_reportsInSync(t *testing.T) {
 				Spec:           dotfileResourceSpec("~/.config/neul/reapply.conf", applyMode),
 			}
 
-			first := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
-			second := EvaluateResourceWithHome(context.Background(), nil, homeDir, resource)
+			first := ApplyDotfile(context.Background(), homeDir, resource)
+			second := ApplyDotfile(context.Background(), homeDir, resource)
 
 			requireDotfileEvent(t, first, "in_sync", "dotfile_applied", 6)
 			requireDotfileEvent(t, second, "in_sync", "dotfile_applied", 6)
@@ -243,7 +243,7 @@ func TestDotfile_reapplySameDesiredState_reportsInSync(t *testing.T) {
 }
 
 func TestDotfile_blocksWhenHomeIsUnavailable(t *testing.T) {
-	event := EvaluateResourceWithHome(context.Background(), nil, "", DesiredResource{
+	event := ApplyDotfile(context.Background(), "", DesiredResource{
 		ID:             "resource_dot_home",
 		Kind:           "dotfile",
 		DesiredVersion: 1,
@@ -256,7 +256,7 @@ func TestDotfile_blocksWhenHomeIsUnavailable(t *testing.T) {
 func TestDotfile_blocksUnsafeResourceID_withoutWritingManagedPath(t *testing.T) {
 	homeDir := t.TempDir()
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+	event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 		ID:             "../escape",
 		Kind:           "dotfile",
 		DesiredVersion: 1,
@@ -275,7 +275,7 @@ func TestDotfileSymlink_blocksUnmanagedSymlinkConflict_withoutWritingManagedPath
 		t.Fatalf("Symlink() error = %v", err)
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+	event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 		ID:             "resource_dot_gitconfig",
 		Kind:           "dotfile",
 		DesiredVersion: 5,
@@ -331,7 +331,7 @@ func TestDotfile_blocksInvalidInputs_withoutWriting(t *testing.T) {
 			outsideDir := t.TempDir()
 			outsideMarker := filepath.Join(outsideDir, "hosts")
 
-			event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+			event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 				ID:             "resource_dot",
 				Kind:           "dotfile",
 				DesiredVersion: 9,
@@ -359,7 +359,7 @@ func TestDotfile_blocksSymlinkEscape_withoutWritingOutsideHome(t *testing.T) {
 		t.Fatalf("Symlink() error = %v", err)
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+	event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 		ID:             "resource_dot_escape",
 		Kind:           "dotfile",
 		DesiredVersion: 4,
@@ -411,7 +411,7 @@ func TestDotfileCopy_blocksConflicts_withoutChangingExistingTarget(t *testing.T)
 			homeDir := t.TempDir()
 			tt.setup(t, homeDir)
 
-			event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+			event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 				ID:             "resource_dot_zshrc",
 				Kind:           "dotfile",
 				DesiredVersion: 8,
@@ -439,7 +439,7 @@ func TestDotfileSymlink_blocksRegularFileConflict_withoutChangingExistingTarget(
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	event := EvaluateResourceWithHome(context.Background(), nil, homeDir, DesiredResource{
+	event := ApplyDotfile(context.Background(), homeDir, DesiredResource{
 		ID:             "resource_dot_gitconfig",
 		Kind:           "dotfile",
 		DesiredVersion: 5,

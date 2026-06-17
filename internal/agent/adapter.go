@@ -44,7 +44,7 @@ func EvaluateResourceWithHome(ctx context.Context, brew PackageAdapter, homeDir 
 		}
 		return CheckPackage(ctx, brew, resource)
 	case "dotfile":
-		return ApplyDotfile(ctx, homeDir, resource)
+		return CheckDotfile(ctx, homeDir, resource)
 	default:
 		return ResourceEvent{ResourceID: resource.ID, Status: "blocked", Message: resource.Kind + " resource kind is unsupported", DesiredVersion: resource.DesiredVersion}
 	}

@@ -90,7 +90,7 @@ func TestCommandPolling_unknownCommandReportsUnsupportedAndDoesNotExecute(t *tes
 	}
 }
 
-func TestAgentTick_reportsDotfileDesiredState(t *testing.T) {
+func TestAgentTick_reportsDotfileDriftWithoutApplyingDesiredState(t *testing.T) {
 	homeDir := t.TempDir()
 	var reportBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -121,29 +121,18 @@ func TestAgentTick_reportsDotfileDesiredState(t *testing.T) {
 	}
 	for _, expected := range []string{
 		`"resourceId":"resource_dot_zshrc"`,
-		`"status":"in_sync"`,
-		`"message":"dotfile_applied"`,
+		`"status":"drifted"`,
+		`"message":"dotfile_drifted"`,
 		`"desiredVersion":2`,
-		`"appliedVersion":2`,
+		`"appliedVersion":0`,
 	} {
 		if !strings.Contains(reportBody, expected) {
 			t.Fatalf("report body = %s, missing %s", reportBody, expected)
 		}
 	}
 	targetPath := filepath.Join(homeDir, ".zshrc")
-	linkTarget, err := os.Readlink(targetPath)
-	if err != nil {
-		t.Fatalf("Readlink() error = %v", err)
-	}
-	if !strings.HasPrefix(linkTarget, filepath.Join(homeDir, ".local", "state", "neul", "dotfiles", "base", "resource_dot_zshrc")+string(filepath.Separator)) {
-		t.Fatalf("link target = %s, want managed state path under home", linkTarget)
-	}
-	body, err := os.ReadFile(targetPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if string(body) != "export NEUL=v2\n" {
-		t.Fatalf("content = %q, want desired content", string(body))
+	if _, err := os.Lstat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("Lstat() error = %v, want target absent before reconcile", err)
 	}
 }
 

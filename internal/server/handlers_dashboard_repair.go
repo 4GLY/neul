@@ -116,7 +116,7 @@ func queryDriftedResourceIDs(r *http.Request, db *sql.DB, machineID string) ([]s
 			continue
 		}
 		seen[resourceID] = struct{}{}
-		if status != string(domain.ResourceStateDrifted) {
+		if status != string(domain.ResourceStateDrifted) && status != string(domain.ResourceStateBlocked) {
 			continue
 		}
 		resourceIDs = append(resourceIDs, resourceID)

@@ -11,6 +11,7 @@ import (
 
 const (
 	MessageApplied                   = "dotfile_applied"
+	MessageDrifted                   = "dotfile_drifted"
 	MessagePathNotAllowed            = "path_not_allowed"
 	MessagePathTraversal             = "path_traversal"
 	MessageSymlinkEscape             = "symlink_escape"

@@ -9,14 +9,14 @@ func (c *Client) commandReportFor(ctx context.Context, command agentCommand, res
 			MachineID: c.config.MachineID,
 			CommandID: command.ID,
 			Status:    "finished",
-			Events:    applyAllPackageResources(ctx, c.brew, resources),
+			Events:    applyAllResources(ctx, c.brew, c.config.HomeDir, resources),
 		}
 	case "repair_drift":
 		return commandReport{
 			MachineID: c.config.MachineID,
 			CommandID: command.ID,
 			Status:    "finished",
-			Events:    applyRequestedPackageResources(ctx, c.brew, resources, commandResourceIDs(command.Payload)),
+			Events:    applyRequestedResources(ctx, c.brew, c.config.HomeDir, resources, commandResourceIDs(command.Payload)),
 		}
 	default:
 		return commandReport{
@@ -27,18 +27,15 @@ func (c *Client) commandReportFor(ctx context.Context, command agentCommand, res
 	}
 }
 
-func applyAllPackageResources(ctx context.Context, adapter PackageAdapter, resources []DesiredResource) []ResourceEvent {
+func applyAllResources(ctx context.Context, adapter PackageAdapter, homeDir string, resources []DesiredResource) []ResourceEvent {
 	events := make([]ResourceEvent, 0, len(resources))
 	for _, resource := range resources {
-		if resource.Kind != "package" {
-			continue
-		}
-		events = append(events, ApplyPackageResource(ctx, adapter, resource))
+		events = append(events, applyResource(ctx, adapter, homeDir, resource))
 	}
 	return events
 }
 
-func applyRequestedPackageResources(ctx context.Context, adapter PackageAdapter, resources []DesiredResource, ids []string) []ResourceEvent {
+func applyRequestedResources(ctx context.Context, adapter PackageAdapter, homeDir string, resources []DesiredResource, ids []string) []ResourceEvent {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -53,12 +50,20 @@ func applyRequestedPackageResources(ctx context.Context, adapter PackageAdapter,
 			events = append(events, ResourceEvent{Status: "blocked", Message: "resource_not_found:" + id})
 			continue
 		}
-		if resource.Kind != "package" {
-			continue
-		}
-		events = append(events, ApplyPackageResource(ctx, adapter, resource))
+		events = append(events, applyResource(ctx, adapter, homeDir, resource))
 	}
 	return events
+}
+
+func applyResource(ctx context.Context, adapter PackageAdapter, homeDir string, resource DesiredResource) ResourceEvent {
+	switch resource.Kind {
+	case "package":
+		return ApplyPackageResource(ctx, adapter, resource)
+	case "dotfile":
+		return ApplyDotfile(ctx, homeDir, resource)
+	default:
+		return ResourceEvent{ResourceID: resource.ID, Status: "blocked", Message: resource.Kind + " resource kind is unsupported", DesiredVersion: resource.DesiredVersion}
+	}
 }
 
 func commandResourceIDs(payload map[string]interface{}) []string {
