@@ -20,13 +20,13 @@ export {
 	createPackageResource,
 	deleteResource,
 	updatePackageResource,
+	updateResource,
 } from "./apiResources";
 export {
 	createLocalSession,
 	LocalSessionError,
 	OwnerSessionRequiredError,
 } from "./localSession";
-export { updateResource } from "./resourceApi";
 
 export type DashboardData = {
 	readonly metrics: DashboardMetrics;

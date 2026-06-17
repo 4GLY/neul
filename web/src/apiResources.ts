@@ -10,6 +10,14 @@ type PackageResourceInput = {
 	readonly desiredVersion: string;
 };
 
+export type DotfileResourceInput = {
+	readonly path: string;
+	readonly content: string;
+	readonly mode: string;
+	readonly applyMode: "copy" | "symlink";
+	readonly targetSegment: string;
+};
+
 export type CreatePackageResourceInput = PackageResourceInput & {
 	readonly targetSegment: string;
 };
@@ -37,10 +45,24 @@ export async function createDotfileResource(input: {
 	return writeResource("/api/resources/dotfile", "POST", input);
 }
 
+export async function updateResource(
+	id: string,
+	input: DotfileResourceInput,
+): Promise<ApiResource> {
+	return writeResource(
+		`/api/resources/${encodeURIComponent(id)}`,
+		"PATCH",
+		input,
+	);
+}
+
 export async function deleteResource(resourceId: string): Promise<void> {
-	const response = await fetch(`/api/resources/${resourceId}`, {
-		method: "DELETE",
-	});
+	const response = await fetch(
+		`/api/resources/${encodeURIComponent(resourceId)}`,
+		{
+			method: "DELETE",
+		},
+	);
 	if (!response.ok) {
 		await handleResourceWriteError(response);
 	}
