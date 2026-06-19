@@ -31,7 +31,7 @@ Included:
 - `neul login --server <origin>` command surface
 - canonical docs/tests migration from planned `neul enroll --server <origin>`
   to `neul login --server <origin>`
-- local callback based browser approval
+- polling based browser approval
 - pair claim and local config write with `0600` permissions
 - `login` enrollment success separated from `up` connected/running success
 - web onboarding copy updated to `neul login` primary path
@@ -99,17 +99,15 @@ Flow:
 
 1. Validate `--server`.
 2. Generate a client nonce.
-3. Start a single-shot callback listener bound to `127.0.0.1` on an ephemeral
-   port.
-4. Request a browser approval URL from the server.
-5. Open the owner browser.
-6. Wait for the callback or poll `POST /api/pair/approval/claim` until the
+3. Request a browser approval URL from the server.
+4. Open the owner browser.
+5. Poll `POST /api/pair/approval/claim` until the
    owner approves, cancels, or the approval expires.
-7. Exchange the approval nonce/verifier for an opaque pair code over the server
+6. Exchange the approval nonce/verifier for an opaque pair code over the server
    API.
-8. Claim the pair code with machine metadata through `/api/pair/claim`.
-9. Write local config with `0600` permissions.
-10. Report enrollment success and point to `neul up`.
+7. Claim the pair code with machine metadata through `/api/pair/claim`.
+8. Write local config with `0600` permissions.
+9. Report enrollment success and point to `neul up`.
 
 `neul login` does not claim durable connected state. It creates local machine
 credentials and binds the machine to the owner workspace. `neul up` is
@@ -129,7 +127,6 @@ Failure copy should stay product-level and recoverable:
 - browser approval was cancelled
 - server is unreachable
 - owner session is required
-- local callback could not bind
 - machine already has config
 
 ## Server And Browser Handoff
@@ -149,12 +146,6 @@ Target endpoints:
 - client nonce
 - verifier challenge
 - machine preview metadata: hostname, OS, architecture, and agent version
-- callback URL bound to `127.0.0.1`
-
-The server validates the callback URL before storing the approval record. It
-must reject any callback URL whose parsed host is not exactly `127.0.0.1` or
-whose scheme is not `http`.
-
 It returns an approval id and an approval URL that the CLI opens in the browser.
 The approval URL is an owner browser route containing the non-secret approval id
 and nonce, for example:
@@ -164,18 +155,18 @@ and nonce, for example:
 ```
 
 `approval/start` is unauthenticated because a fresh CLI has no owner session.
-It must be abuse-bounded with short TTL records, per-callback/per-IP rate
+It must be abuse-bounded with short TTL records, per-IP rate
 limits, and no secret material in the response. Approval records expire exactly
 10 minutes after `approval/start`, matching the existing pairing TTL.
 
 `approval/approve` is a CSRF-protected owner-session action. The approval page
 must show the requesting machine context before approval: hostname, OS,
-architecture, agent version, callback host, and requested time. It also includes
-a per-approval CSRF token. The approve POST must validate owner session,
-same-origin `Origin` or `Referer`, and the per-approval CSRF token before
-marking the short-lived approval record as approved, bound to the client nonce,
-verifier challenge, callback URL, and machine preview metadata. It does not put
-pair code, pair token, or machine token in the browser URL.
+architecture, agent version, and requested time. It also includes a per-approval
+CSRF token. The approve POST must validate owner session, same-origin `Origin`
+or `Referer`, and the per-approval CSRF token before marking the short-lived
+approval record as approved, bound to the client nonce, verifier challenge, and
+machine preview metadata. It does not put pair code, pair token, or machine
+token in the browser URL.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives the
 approval id, nonce, and verifier. It does not require owner session. Before the
@@ -224,19 +215,15 @@ Guardrails:
 - Browser code must not place pair code or machine token in `document.title`.
 - Primary approval URL must not expose pair code or machine token in a general
   browser URL.
-- Local callback listener is single-shot and closes after success, rejection, or
-  timeout.
-- Local callback is best-effort. The browser approval page may wake the CLI with
-  a top-level navigation or redirect to
-  `http://127.0.0.1:<port>/callback?approval=<approval-id>&state=<approved|cancelled>&nonce=<nonce>`.
-  The CLI rejects callbacks whose nonce does not match the generated nonce.
-- Polling `POST /api/pair/approval/claim` is authoritative; the callback only
-  wakes the CLI sooner.
-- Concurrent `neul login` runs use distinct nonces and callback ports.
+- Polling `POST /api/pair/approval/claim` is the only CLI-side approval wait
+  mechanism in this slice. Browser-to-loopback wake-up and deep-link wake-up are
+  deferred.
+- Concurrent `neul login` runs use distinct approval ids, nonces, and verifier
+  challenges.
 
-This avoids relying on browser `fetch` from the server origin to
-`http://127.0.0.1:<port>` with a bearer credential. The local callback is only a
-wake-up signal; the sensitive exchange happens from CLI to server.
+This avoids relying on browser `fetch`, subresource loads, or top-level
+navigation from the server origin to `http://127.0.0.1:<port>`. The sensitive
+exchange happens from CLI to server.
 
 ## Contract Update
 
@@ -247,8 +234,8 @@ same implementation change.
 Required contract edits:
 
 - Update Auth Defaults so pair tokens are no longer allowed in browser code,
-  local callback payloads, `neul://...&pair=<token>`, or fallback/debug browser
-  copy. The only browser-visible approval values are approval id, nonce, and
+  browser handoff payloads, `neul://...&pair=<token>`, or fallback/debug browser copy.
+  The only browser-visible approval values are approval id, nonce, and
   non-secret status.
 - Replace the planned primary packaged-client command
   `neul enroll --server <origin>` with `neul login --server <origin>`.
@@ -262,7 +249,7 @@ Required contract edits:
   `GET /api/pair/approval/status` and the same 10 minute TTL.
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
-  nonce/verifier binding, and loopback callback wake-up semantics.
+  nonce/verifier binding, and polling semantics.
 - State that `approval/start` is unauthenticated but rate-limited and
   TTL-bounded.
 - State that `approval/claim` is the CLI polling/exchange route and does not
@@ -290,6 +277,7 @@ Required contract edits:
 - Update `scripts/validate-packaged-client-docs.sh` in lockstep with the new
   required strings: `neul login --server <origin>` as primary, no
   `neul://enroll?server=` or `neul://...&pair=<token>` required-string checks,
+  no `local callback binds to 127.0.0.1 only` required-string check,
   and no `allowedPairTokenHandoffs` copy that says pair tokens are allowed in
   browser handoff surfaces.
 - Replace `allowed pair-token handoffs`, `Allowed pair-token handoffs`, and
@@ -313,10 +301,9 @@ Required contract edits:
 Deep link decision:
 
 - This slice drops `neul://` deep-link handoff entirely.
-- The only browser-to-CLI wake-up in scope is the best-effort loopback redirect
-  to `http://127.0.0.1:<port>/callback?...`.
-- A future pair-token-free deep link may be designed later, but it is out of
-  scope for this implementation plan.
+- This slice also drops browser-to-loopback local callback wake-up entirely.
+- A future pair-token-free deep link or callback wake-up may be designed later,
+  but it is out of scope for this implementation plan.
 
 New primary command:
 
@@ -386,7 +373,6 @@ Login:
 
 ```text
 neul login --server <origin>
-  -> local callback starts
   -> browser approval opens
   -> owner approves
   -> CLI exchanges approval for pair code
@@ -425,7 +411,7 @@ Go tests:
   no token-looking values.
 - `neul up` with existing config does not call pair claim and does not overwrite
   config.
-- `neul login --server <origin>` starts approval, receives callback, claims
+- `neul login --server <origin>` starts approval, polls approval claim, claims
   pair code, writes config mode `0600`, and reports enrollment success without
   claiming durable connected state.
 - `neul up` with existing config starts/verifies the agent and reports connected
@@ -435,12 +421,11 @@ Go tests:
   reports `local_heartbeat_missing`.
 - `neul up` does not accept a connect-once/diagnostic status receipt as durable
   connected.
-- `neul login` fails clearly when callback bind fails, approval expires, owner
-  session is missing, or config already exists.
-- approval start/approve/claim binds nonce and verifier to callback and requires
+- `neul login` fails clearly when approval expires, owner session is missing,
+  server polling fails, or config already exists.
+- approval start/approve/claim binds nonce and verifier to approval and requires
   owner session for approval.
 - approval start is unauthenticated but rate-limited and TTL-bounded.
-- approval start rejects callback URLs that are not `http://127.0.0.1:<port>/...`.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
@@ -453,8 +438,6 @@ Go tests:
 - approval status requires owner session and is not used by CLI polling.
 - approval status returns claimed `machineId` and `claimedAt`, but never returns
   pair code, pair token, or machine token.
-- callback rejects mismatched nonce.
-- callback wake-up is best-effort; claim polling is authoritative.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
 - `neul up` reuses existing LaunchAgent install/probe helpers but reads the raw
