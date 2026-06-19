@@ -159,13 +159,37 @@ Target endpoints:
 - `POST /api/pair/approval/claim`
 - `GET /api/pair/approval/status`
 
-`approval/start` receives:
+`approval/start` receives the client nonce, a PKCE-style verifier challenge,
+and machine preview metadata. `machine.name` is the display hostname used by
+the existing `/api/pair/claim` request shape. The server derives the approval
+URL origin from configured external origin or the request origin; the request
+body does not trust a client-supplied server origin.
 
-- server origin
-- client nonce
-- verifier challenge
-- machine preview metadata: hostname, OS, architecture, and agent version
-It returns an approval id and an approval URL that the CLI opens in the browser.
+```json
+{
+  "nonce": "nonce_base64url_32_bytes",
+  "verifierChallenge": "sha256_verifier_base64url",
+  "machine": {
+    "name": "joon-macbook",
+    "os": "darwin",
+    "arch": "arm64",
+    "agentVersion": "0.1.0"
+  }
+}
+```
+
+It returns an approval id and an approval URL that the CLI opens in the
+browser:
+
+```json
+{
+  "approvalId": "approval_01HX...",
+  "approvalUrl": "https://neul.example/enroll/approve?approval=approval_01HX...&nonce=nonce_base64url_32_bytes",
+  "expiresAt": "2026-06-19T08:10:00Z",
+  "pollAfterMs": 1000
+}
+```
+
 The approval URL is an owner browser route containing the non-secret approval id
 and nonce, for example:
 
@@ -181,11 +205,30 @@ limits, and no secret material in the response. Approval records expire exactly
 `approval/approve` is a CSRF-protected owner-session action. The approval page
 must show the requesting machine context before approval: hostname, OS,
 architecture, agent version, and requested time. It also includes a per-approval
-CSRF token. The approve POST must validate owner session, same-origin `Origin`
-or `Referer`, and the per-approval CSRF token before marking the short-lived
-approval record as approved, bound to the client nonce, verifier challenge, and
-machine preview metadata. It does not put pair code, pair token, or machine
-token in the browser URL.
+CSRF token. The approve POST receives:
+
+```json
+{
+  "approvalId": "approval_01HX...",
+  "nonce": "nonce_base64url_32_bytes",
+  "csrfToken": "csrf_base64url_32_bytes",
+  "decision": "approve"
+}
+```
+
+`decision` is either `approve` or `cancel`. The approve POST must validate owner
+session, same-origin `Origin` or `Referer`, and the per-approval CSRF token
+before marking the short-lived approval record as approved or cancelled, bound
+to the client nonce, verifier challenge, and machine preview metadata. It does
+not put pair code, pair token, or machine token in the browser URL. Its response
+contains only the resulting state and expiry:
+
+```json
+{
+  "status": "approved",
+  "expiresAt": "2026-06-19T08:10:00Z"
+}
+```
 
 If the approval page is opened in a browser without owner session, it must not
 create or expose credentials. It shows recoverable copy: open this same approval
@@ -194,30 +237,61 @@ session first. The CLI continues polling `approval/claim` until approved,
 cancelled, or expired, so approval can happen from another authenticated device
 that can reach the self-hosted server.
 
-`POST /api/pair/approval/claim` is a machine-client action that receives the
-approval id, nonce, and verifier. It does not require owner session. Before the
-owner approves, it returns `pending`; after cancellation or expiry it returns
-`cancelled` or `expired`; after approval it creates or returns one opaque pair
-code from the same `pairing_codes` storage used by `/api/pair/init`. The server
-must reject missing or incorrect verifiers by checking the submitted verifier
-against the challenge stored by `approval/start`. The CLI then calls the
-existing `/api/pair/claim` with that code and machine metadata. The claim
-metadata must match the machine preview metadata from `approval/start`.
-`approval/claim` must be abuse-bounded: rate-limit by approval id and source IP,
-lock or expire the approval after repeated verifier failures, and never reveal
-whether the nonce or verifier was the wrong component.
+`POST /api/pair/approval/claim` is a machine-client action that receives only
+the approval id, nonce, and verifier. It does not receive machine metadata and
+does not require owner session.
 
-The metadata binding is enforced in `/api/pair/claim`, not only in
-`approval/claim`: approval-created pair codes carry expected hostname, OS,
-architecture, and agent version metadata in server-side storage. This requires a
-schema change that can distinguish approval-created pair codes from ordinary
-`/api/pair/init` fallback/debug codes. The minimal shape is an approval id or
-source kind plus nullable expected metadata columns on the pairing record.
-Ordinary `/api/pair/init` rows leave those fields empty and keep existing
-fallback/debug behavior. When `/api/pair/claim` receives metadata for an
-approval-created code, it rejects any mismatch before creating the machine
-credential. After pair claim succeeds, the approval record stores the claimed
-`machineId` so owner-session browser UI can watch the right machine.
+```json
+{
+  "approvalId": "approval_01HX...",
+  "nonce": "nonce_base64url_32_bytes",
+  "verifier": "verifier_base64url_32_bytes"
+}
+```
+
+Before the owner approves, it returns:
+
+```json
+{
+  "status": "pending",
+  "expiresAt": "2026-06-19T08:10:00Z",
+  "retryAfterMs": 1000
+}
+```
+
+After cancellation or expiry it returns the same shape with `status` set to
+`cancelled` or `expired`. After owner approval and verifier validation, it
+creates or returns one opaque pair code from the same `pairing_codes` storage
+used by `/api/pair/init`:
+
+```json
+{
+  "status": "approved",
+  "pairCode": "pair_...",
+  "expiresAt": "2026-06-19T08:10:00Z"
+}
+```
+
+The server must reject missing or incorrect verifiers by computing
+`SHA-256(submitted verifier)` and comparing it in constant time with the
+verifier challenge stored by `approval/start`. The CLI then calls the existing
+`/api/pair/claim` with that `pairCode` and machine metadata. Metadata matching
+is enforced by `/api/pair/claim`, not by `approval/claim`. `approval/claim`
+must be abuse-bounded: rate-limit by approval id and source IP, lock or expire
+the approval after repeated verifier failures, and never reveal whether the
+nonce or verifier was the wrong component.
+
+The metadata binding is enforced in `/api/pair/claim`: approval-created pair
+codes carry expected hostname/name, OS, architecture, and agent version metadata
+in server-side storage. This requires a schema change that can distinguish
+approval-created pair codes from ordinary `/api/pair/init` fallback/debug codes.
+The minimal shape is an approval id or source kind plus nullable expected
+metadata columns on the pairing record. Ordinary `/api/pair/init` rows leave
+those fields empty and keep existing fallback/debug behavior. When
+`/api/pair/claim` receives metadata for an approval-created code, it rejects any
+mismatch before creating the machine credential. After pair claim succeeds, the
+approval record stores the claimed `machineId` so owner-session browser UI can
+watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 CLI-opened approval page. It receives approval id and returns one of:
@@ -227,12 +301,40 @@ per-approval CSRF token for the approve action. The `claimed` response includes
 `machineId` and `claimedAt`. This endpoint never returns pair code, pair token,
 machine token, setup token, or plaintext verifier.
 
+Pending or approved response:
+
+```json
+{
+  "status": "pending",
+  "approvalId": "approval_01HX...",
+  "expiresAt": "2026-06-19T08:10:00Z",
+  "csrfToken": "csrf_base64url_32_bytes",
+  "machine": {
+    "name": "joon-macbook",
+    "os": "darwin",
+    "arch": "arm64",
+    "agentVersion": "0.1.0"
+  }
+}
+```
+
+Claimed response:
+
+```json
+{
+  "status": "claimed",
+  "machineId": "machine_01HX...",
+  "claimedAt": "2026-06-19T08:04:00Z",
+  "expiresAt": "2026-06-19T08:10:00Z"
+}
+```
+
 Approval persistence:
 
 - Add a migration for a new approval-record table before implementing these
   endpoints.
-- Minimal fields: approval id, nonce hash, verifier challenge hash, CSRF token
-  hash, state, machine preview metadata, createdAt, expiresAt, approvedAt,
+- Minimal fields: approval id, nonce hash, verifier challenge, CSRF token hash,
+  state, machine preview metadata, createdAt, expiresAt, approvedAt,
   cancelledAt, claimedAt, claimedMachineId, claim failure count, and last
   failure metadata needed for rate limiting.
 - The table stores no pair code, machine token, setup token, or plaintext
@@ -512,17 +614,16 @@ Go tests:
 - approval start/approve/claim binds nonce and verifier to approval and requires
   owner session for approval.
 - approval start is unauthenticated but rate-limited and TTL-bounded.
-- approval records persist nonce/verifier challenge/CSRF hashes, state,
-  machine preview metadata, expiry, claim failure count, and claimed machine id
-  without storing pair code, machine token, setup token, or plaintext verifier.
+- approval records persist nonce hash, verifier challenge, CSRF token hash,
+  state, machine preview metadata, expiry, claim failure count, and claimed
+  machine id without storing pair code, machine token, setup token, or plaintext
+  verifier.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
 - approval claim rate-limits repeated attempts and locks or expires approval
   after repeated verifier failures.
 - verifier generation uses at least 32 bytes of randomness.
-- approval claim rejects machine metadata that does not match approval start
-  preview metadata.
 - `/api/pair/claim` rejects mismatched machine metadata for approval-created
   pair codes before creating machine credentials.
 - ordinary `/api/pair/init` fallback/debug pair codes still accept existing
