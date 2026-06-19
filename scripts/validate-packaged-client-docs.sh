@@ -77,6 +77,7 @@ packaged_primary_flow() {
 	require_text "web/src/copy.ts" "neul login --server <origin>" "web target login command"
 	require_text "web/src/OnboardingWizard.tsx" "neul login --server" "web wizard rendered login command"
 	require_text "web/src/onboardingWizard.test.tsx" "neul login --server http://localhost:3000" "web wizard login command assertion"
+	require_text "web/e2e/mvp-flow.ts" "neul login --server" "E2E primary login command assertion"
 	require_text "web/src/copy.ts" "fallback/debug 명령으로 등록하세요" "web fallback/debug instruction"
 	require_text "web/src/onboardingWizard.test.tsx" "not.toContain(\"--pair\")" "web hides pair code in target command"
 	require_text "internal/domain/contracts.md" "Primary packaged client onboarding flow" "contract packaged onboarding heading"
@@ -133,6 +134,7 @@ security_model_guardrails() {
 	require_absent "docs/qa/agent-onboarding.md" 'then route `/api/pair/poll`' "QA fallback poll expiry source"
 	require_absent "web/src/OnboardingWizard.tsx" "neul enroll --server" "web wizard stale enroll command"
 	require_absent "web/src/onboardingWizard.test.tsx" "neul enroll --server" "web wizard stale enroll assertion"
+	require_absent "web/e2e/mvp-flow.ts" "neul enroll --server" "E2E stale enroll assertion"
 	if grep -Fq "packaged-client command bridge" docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts; then
 		fail "packaged-client command bridge must not be a browser-safe approval handoff"
 	fi

@@ -36,7 +36,7 @@ export async function visibleOnboardMachine(
 		generated === null ||
 		generated.includes("--pair") ||
 		generated.includes("go run") ||
-		!generated.includes("neul enroll --server")
+		!generated.includes("neul login --server")
 	) {
 		throw new Error(`generated command missing: ${generated}`);
 	}
