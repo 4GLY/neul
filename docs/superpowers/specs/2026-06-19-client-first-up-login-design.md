@@ -91,9 +91,12 @@ Already joined behavior:
    status receipt was written by the long-running agent, `lastHeartbeatAt >=
    upStartedAt`, and `lastError` is empty or `null`.
 6. On timeout, print `local_heartbeat_missing`; if LaunchAgent install/kickstart
-   fails, print `agent_not_running`; if the status file reports auth failure,
-   print `auth_invalid`; if it reports server connection failure, print
-   `server_unreachable`.
+   fails, print `agent_not_running`. If the status file reports `lastError.kind`,
+   map it deterministically:
+   - `auth_failure` -> `auth_invalid`
+   - `connection_failure` -> `server_unreachable`
+   - `server_failure` -> `server_error`
+   - `rate_limited` -> `rate_limited`
 7. Print a short locally-derived running status summary.
 
 `neul up` must not silently overwrite existing credentials. Any force/re-enroll
@@ -106,7 +109,7 @@ behavior belongs to an explicit later recovery surface.
 Flow:
 
 1. Validate `--server`.
-2. Generate a client nonce.
+2. Generate a client nonce and a verifier with at least 32 bytes of randomness.
 3. Request a browser approval URL from the server.
 4. Print the approval URL and try to open it in the owner browser.
    If the local browser has no owner session, the page tells the user to open
@@ -195,6 +198,9 @@ must reject missing or incorrect verifiers by checking the submitted verifier
 against the challenge stored by `approval/start`. The CLI then calls the
 existing `/api/pair/claim` with that code and machine metadata. The claim
 metadata must match the machine preview metadata from `approval/start`.
+`approval/claim` must be abuse-bounded: rate-limit by approval id and source IP,
+lock or expire the approval after repeated verifier failures, and never reveal
+whether the nonce or verifier was the wrong component.
 
 The metadata binding is enforced in `/api/pair/claim`, not only in
 `approval/claim`: approval-created pair codes carry expected hostname, OS,
@@ -224,6 +230,8 @@ Guardrails:
 - Approval status never returns pair code, pair token, or machine token.
 - Approval start is unauthenticated but rate-limited and TTL-bounded.
 - Approval claim rejects absent, malformed, or challenge-mismatched verifier.
+- Approval claim is rate-limited and attempt-bounded because it releases the
+  one-time pair code.
 - Approval page shows requesting machine context before the owner approves.
 - Approval approve validates owner session, same-origin request headers, and a
   per-approval CSRF token.
@@ -258,6 +266,7 @@ Required contract edits:
 - Replace legacy `pair token` product/docs wording with `pair code` for the
   one-time `/api/pair/claim` value. Keep `machine token` for the durable bearer
   returned by `/api/pair/claim`.
+- Require CLI verifier generation with at least 32 bytes of randomness.
 - Replace the planned primary packaged-client command
   `neul enroll --server <origin>` with `neul login --server <origin>`.
 - Rewrite Scope Guardrails so the old "no pending approval table" rule is
@@ -277,6 +286,8 @@ Required contract edits:
   require owner session.
 - State that `approval/claim` must verify the submitted verifier against the
   stored verifier challenge before returning a pair code.
+- State that `approval/claim` is rate-limited and attempt-bounded by approval id
+  and source IP.
 - State that `approval/status` is owner-session-only and exists for approval
   page status, not for CLI polling.
 - State that approval pages show requesting machine context before owner
@@ -316,6 +327,9 @@ Required contract edits:
 - Update `web/src/copy.ts` `commandTemplate` from `neul enroll --server
   <origin>` to `neul login --server <origin>`, and update the matching
   `scripts/validate-packaged-client-docs.sh` required-string check.
+- Update the fallback/debug required string in
+  `scripts/validate-packaged-client-docs.sh` and `web/src/copy.ts` from
+  `--pair <token>` to `--pair <pair-code>`.
 - Update `docs/qa/agent-onboarding.md` so it uses `neul login` for enrollment,
   `neul up` for connected/running state, and no longer says enroll success
   equals `Connected`.
@@ -444,6 +458,10 @@ Go tests:
   upStartedAt`, and `lastError` is empty or `null`.
 - `neul up` times out after 60 seconds without a fresh successful heartbeat and
   reports `local_heartbeat_missing`.
+- `neul up` maps status `lastError.kind` values deterministically:
+  `auth_failure` -> `auth_invalid`, `connection_failure` ->
+  `server_unreachable`, `server_failure` -> `server_error`, and `rate_limited`
+  -> `rate_limited`.
 - `neul up` does not accept a connect-once/diagnostic status receipt as durable
   connected.
 - `neul login` fails clearly when approval expires, owner session is missing,
@@ -454,6 +472,9 @@ Go tests:
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
+- approval claim rate-limits repeated attempts and locks or expires approval
+  after repeated verifier failures.
+- verifier generation uses at least 32 bytes of randomness.
 - approval claim rejects machine metadata that does not match approval start
   preview metadata.
 - `/api/pair/claim` rejects mismatched machine metadata for approval-created
