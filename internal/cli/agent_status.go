@@ -29,8 +29,10 @@ var (
 )
 
 type localAgentStatus struct {
-	LastHeartbeatAt string          `json:"lastHeartbeatAt"`
-	LastError       json.RawMessage `json:"lastError"`
+	Mode                 string          `json:"mode"`
+	LastHeartbeatAttempt string          `json:"lastHeartbeatAttempt"`
+	LastHeartbeatAt      string          `json:"lastHeartbeatAt"`
+	LastError            json.RawMessage `json:"lastError"`
 }
 
 func runAgentStatusCommand(args []string, stdout io.Writer) error {

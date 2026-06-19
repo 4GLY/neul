@@ -136,7 +136,12 @@ func TestAgentLogs_readsLocalLogFile(t *testing.T) {
 
 func writeTestConfig(t *testing.T) string {
 	t.Helper()
-	configPath := filepath.Join(t.TempDir(), "config.json")
+	return writeTestConfigInDir(t, t.TempDir())
+}
+
+func writeTestConfigInDir(t *testing.T, dir string) string {
+	t.Helper()
+	configPath := filepath.Join(dir, "config.json")
 	content := []byte(`{"serverURL":"http://127.0.0.1:8080","machineId":"machine_1","machineToken":"mtn_secret"}`)
 	if err := os.WriteFile(configPath, content, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
