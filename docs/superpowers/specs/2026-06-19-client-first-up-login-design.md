@@ -16,9 +16,17 @@ steady-state 명령으로 분리한다.
 - `neul up`: 이미 로그인한 machine에서 user-level agent를 켜거나 현재 fleet
   상태를 설명한다.
 
-Setup token, pair token, machine token은 내부 credential이다. Primary CLI output,
+Setup token, pair code, machine token은 내부 credential이다. Primary CLI output,
 browser history, document title, logs, localStorage, general URL query string의
 주인공이 되어서는 안 된다.
+
+Vocabulary:
+
+- `pair code`: one-time claim value consumed by `/api/pair/claim`.
+- `machine token`: durable bearer credential returned by `/api/pair/claim` and
+  stored only in local machine config.
+- `pair token`: legacy wording to remove from product/docs copy in this slice;
+  use `pair code` for the claim value.
 
 ## Scope
 
@@ -100,7 +108,10 @@ Flow:
 1. Validate `--server`.
 2. Generate a client nonce.
 3. Request a browser approval URL from the server.
-4. Open the owner browser.
+4. Print the approval URL and try to open it in the owner browser.
+   If the local browser has no owner session, the page tells the user to open
+   the same URL in an already-authenticated owner browser or first create an
+   owner session on this browser.
 5. Poll `POST /api/pair/approval/claim` until the
    owner approves, cancels, or the approval expires.
 6. Exchange the approval nonce/verifier for an opaque pair code over the server
@@ -167,6 +178,13 @@ or `Referer`, and the per-approval CSRF token before marking the short-lived
 approval record as approved, bound to the client nonce, verifier challenge, and
 machine preview metadata. It does not put pair code, pair token, or machine
 token in the browser URL.
+
+If the approval page is opened in a browser without owner session, it must not
+create or expose credentials. It shows recoverable copy: open this same approval
+URL in an already-authenticated owner browser, or create/restore the owner
+session first. The CLI continues polling `approval/claim` until approved,
+cancelled, or expired, so approval can happen from another authenticated device
+that can reach the self-hosted server.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives the
 approval id, nonce, and verifier. It does not require owner session. Before the
@@ -237,6 +255,9 @@ Required contract edits:
   browser handoff payloads, `neul://...&pair=<token>`, or fallback/debug browser copy.
   The only browser-visible approval values are approval id, nonce, and
   non-secret status.
+- Replace legacy `pair token` product/docs wording with `pair code` for the
+  one-time `/api/pair/claim` value. Keep `machine token` for the durable bearer
+  returned by `/api/pair/claim`.
 - Replace the planned primary packaged-client command
   `neul enroll --server <origin>` with `neul login --server <origin>`.
 - Rewrite Scope Guardrails so the old "no pending approval table" rule is
@@ -278,6 +299,7 @@ Required contract edits:
   required strings: `neul login --server <origin>` as primary, no
   `neul://enroll?server=` or `neul://...&pair=<token>` required-string checks,
   no `local callback binds to 127.0.0.1 only` required-string check,
+  no `docs/mvp.md` `local callback` required-string check,
   and no `allowedPairTokenHandoffs` copy that says pair tokens are allowed in
   browser handoff surfaces.
 - Replace `allowed pair-token handoffs`, `Allowed pair-token handoffs`, and
@@ -349,6 +371,9 @@ Rules:
   status polling.
 - The CLI-opened `/enroll/approve?approval=<approval-id>&nonce=<nonce>` page
   owns approval status polling with `GET /api/pair/approval/status`.
+- If that page has no owner session, it shows copy telling the user to open the
+  same URL in an already-authenticated owner browser or create/restore the owner
+  session first.
 - After that approval page first sees `claimed` with `machineId`, it shows a
   waiting state that tells the user to run `neul up`.
 - Connected state is shown only after the first heartbeat makes the machine
