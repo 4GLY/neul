@@ -109,6 +109,45 @@ func TestLogin_whenServerPollingFails_printsRecoverableFailure(t *testing.T) {
 	}
 }
 
+func TestLogin_whenApprovalStartFails_printsRecoverableLoginFailure(t *testing.T) {
+	server := newLoginApprovalServer(t, loginApprovalServerOptions{startErrorCode: "approval_start_failed", startErrorStatus: http.StatusInternalServerError})
+	defer server.Close()
+	var stdout strings.Builder
+
+	err := Run([]string{"login", "--server", server.URL, "--config-dir", t.TempDir()}, &stdout, &stdout)
+
+	if err == nil {
+		t.Fatal("Run() error = nil, want approval start failure")
+	}
+	for _, want := range []string{"로그인을 완료하지 못했습니다", "neul login --server"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestLogin_whenPairClaimFails_printsRecoverableLoginFailure(t *testing.T) {
+	server := newLoginApprovalServer(t, loginApprovalServerOptions{
+		claimStatus:        "approved",
+		pairCode:           "pair_from_approval",
+		pairClaimErrorCode: "pairing_claim_failed",
+		pairClaimStatus:    http.StatusInternalServerError,
+	})
+	defer server.Close()
+	var stdout strings.Builder
+
+	err := Run([]string{"login", "--server", server.URL, "--config-dir", t.TempDir()}, &stdout, &stdout)
+
+	if err == nil {
+		t.Fatal("Run() error = nil, want pair claim failure")
+	}
+	for _, want := range []string{"로그인을 완료하지 못했습니다", "neul login --server"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
 func overrideBrowserOpenForTest(t *testing.T, open func(string) error) func() {
 	t.Helper()
 	previous := openApprovalURL

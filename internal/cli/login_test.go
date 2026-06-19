@@ -147,10 +147,14 @@ func TestLogin_whenPairCodeAlreadyIssued_printsRestartGuidance(t *testing.T) {
 }
 
 type loginApprovalServerOptions struct {
-	claimStatus string
-	pairCode    string
-	errorCode   string
-	errorStatus int
+	claimStatus        string
+	pairCode           string
+	errorCode          string
+	errorStatus        int
+	startErrorCode     string
+	startErrorStatus   int
+	pairClaimErrorCode string
+	pairClaimStatus    int
 }
 
 type loginApprovalServer struct {
@@ -171,6 +175,11 @@ func newLoginApprovalServer(t *testing.T, options loginApprovalServerOptions) *l
 		switch r.URL.Path {
 		case "/api/pair/approval/start":
 			loginServer.approvalStarts.Add(1)
+			if options.startErrorCode != "" {
+				w.WriteHeader(options.startErrorStatus)
+				_, _ = fmt.Fprintf(w, `{"error":{"code":"%s","message":"terminal"}}`, options.startErrorCode)
+				return
+			}
 			var body struct {
 				Nonce             string `json:"nonce"`
 				VerifierChallenge string `json:"verifierChallenge"`
@@ -187,6 +196,11 @@ func newLoginApprovalServer(t *testing.T, options loginApprovalServerOptions) *l
 			writeApprovalClaimForTest(w, options)
 		case "/api/pair/claim":
 			loginServer.pairClaims.Add(1)
+			if options.pairClaimErrorCode != "" {
+				w.WriteHeader(options.pairClaimStatus)
+				_, _ = fmt.Fprintf(w, `{"error":{"code":"%s","message":"terminal"}}`, options.pairClaimErrorCode)
+				return
+			}
 			var body struct {
 				Code string `json:"code"`
 			}

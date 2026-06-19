@@ -65,6 +65,7 @@ func runLogin(args []string, stdout io.Writer) error {
 	machine := currentMachineMetadata()
 	start, err := startApproval(origin, proof, machine)
 	if err != nil {
+		printRecoverableLoginFailure(stdout, origin)
 		return err
 	}
 	if _, err := fmt.Fprintf(stdout, "브라우저에서 이 요청을 승인하세요: %s\n비교 코드: %s\n", start.ApprovalURL, start.ComparisonCode); err != nil {
@@ -79,6 +80,7 @@ func runLogin(args []string, stdout io.Writer) error {
 	}
 	claim, err := claimPairingCode(origin, pairCode)
 	if err != nil {
+		printRecoverableLoginFailure(stdout, origin)
 		return err
 	}
 	config := Config{
@@ -246,6 +248,10 @@ func printLoginFailure(stdout io.Writer, serverURL string, err error) {
 		return
 	}
 	_, _ = fmt.Fprintf(stdout, "서버 승인 확인에 실패했습니다. 다시 실행: neul login --server %s\n", serverURL)
+}
+
+func printRecoverableLoginFailure(stdout io.Writer, serverURL string) {
+	_, _ = fmt.Fprintf(stdout, "로그인을 완료하지 못했습니다. 다시 실행: neul login --server %s\n", serverURL)
 }
 
 func normalizeServerOrigin(raw string) (string, error) {
