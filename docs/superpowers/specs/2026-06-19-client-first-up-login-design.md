@@ -185,6 +185,7 @@ browser:
 {
   "approvalId": "approval_01HX...",
   "approvalUrl": "https://neul.example/enroll/approve?approval=approval_01HX...&nonce=nonce_base64url_32_bytes",
+  "comparisonCode": "742-918",
   "expiresAt": "2026-06-19T08:10:00Z",
   "pollAfterMs": 1000
 }
@@ -197,10 +198,20 @@ and nonce, for example:
 <origin>/enroll/approve?approval=<approval-id>&nonce=<nonce>
 ```
 
+The CLI prints the `comparisonCode` next to the opened approval URL. The browser
+approval page displays the same code after loading `approval/status`, and its
+approve button copy tells the owner to approve only when the browser code
+matches the terminal code. This is the out-of-band binding for unauthenticated
+client-started approval URLs; owner-visible machine metadata is helpful context,
+but it is client supplied and not trusted as the binding.
+
 `approval/start` is unauthenticated because a fresh CLI has no owner session.
 It must be abuse-bounded with short TTL records, per-IP rate
 limits, and no secret material in the response. Approval records expire exactly
 10 minutes after `approval/start`, matching the existing pairing TTL.
+Concrete limits for MVP: max 10 approval starts per minute per source IP, max
+30 approval starts per hour per source IP, and HTTP 429
+`approval_start_rate_limited` after either threshold.
 
 `approval/approve` is a CSRF-protected owner-session action. The approval page
 must show the requesting machine context before approval: hostname, OS,
@@ -249,28 +260,35 @@ does not require owner session.
 }
 ```
 
-Before the owner approves, it returns:
+Before the owner approves, it returns HTTP 200:
 
 ```json
 {
   "status": "pending",
-  "expiresAt": "2026-06-19T08:10:00Z",
+  "approvalExpiresAt": "2026-06-19T08:10:00Z",
   "retryAfterMs": 1000
 }
 ```
 
-After cancellation or expiry it returns the same shape with `status` set to
-`cancelled` or `expired`. After owner approval and verifier validation, it
-creates or returns one opaque pair code from the same `pairing_codes` storage
-used by `/api/pair/init`:
+After cancellation or expiry it returns the canonical error envelope described
+in `internal/domain/contracts.md`: HTTP 409 `approval_cancelled` or HTTP 410
+`approval_expired`. After owner approval and verifier validation, it creates
+one opaque pair code from the same `pairing_codes` storage used by
+`/api/pair/init` and returns HTTP 200:
 
 ```json
 {
   "status": "approved",
   "pairCode": "pair_...",
-  "expiresAt": "2026-06-19T08:10:00Z"
+  "pairCodeExpiresAt": "2026-06-19T08:15:00Z"
 }
 ```
+
+Approval expiry and pair-code expiry are separate. The approval record expires
+10 minutes after `approval/start`. The pair code is created only after
+`approval/claim` validates an approved record, and the pairing row expires 10
+minutes after that pair-code creation time. `pairCodeExpiresAt` is the pairing
+row expiry, not the original approval expiry.
 
 The server must reject missing or incorrect verifiers by computing
 `SHA-256(submitted verifier)` and comparing it in constant time with the
@@ -280,6 +298,23 @@ is enforced by `/api/pair/claim`, not by `approval/claim`. `approval/claim`
 must be abuse-bounded: rate-limit by approval id and source IP, lock or expire
 the approval after repeated verifier failures, and never reveal whether the
 nonce or verifier was the wrong component.
+
+`approval/claim` is intentionally single-issue. Under a transaction, exactly
+one poll may create and receive the pair code. The approval record stores
+`pairCodeIssuedAt` and the approval-created pairing row id, but not plaintext
+pair code. A later `approval/claim` after the pair code was issued but before
+`/api/pair/claim` consumption returns HTTP 409 `approval_pair_code_issued` with
+recoverable copy telling the CLI to restart `neul login` if it did not receive
+the code locally. A later `approval/claim` after `/api/pair/claim` consumption
+returns HTTP 200:
+
+```json
+{
+  "status": "claimed",
+  "machineId": "machine_01HX...",
+  "claimedAt": "2026-06-19T08:04:00Z"
+}
+```
 
 The metadata binding is enforced in `/api/pair/claim`: approval-created pair
 codes carry expected hostname/name, OS, architecture, and agent version metadata
@@ -309,6 +344,7 @@ Pending or approved response:
   "approvalId": "approval_01HX...",
   "expiresAt": "2026-06-19T08:10:00Z",
   "csrfToken": "csrf_base64url_32_bytes",
+  "comparisonCode": "742-918",
   "machine": {
     "name": "joon-macbook",
     "os": "darwin",
@@ -329,14 +365,39 @@ Claimed response:
 }
 ```
 
+Approval endpoint HTTP contract:
+
+| Endpoint | Success | Terminal and error cases |
+| --- | --- | --- |
+| `POST /api/pair/approval/start` | `201 Created` with `approvalId`, `approvalUrl`, `comparisonCode`, `expiresAt`, `pollAfterMs` | `400 bad_json`, `400 approval_start_invalid`, `429 approval_start_rate_limited`, `500 approval_start_failed` |
+| `POST /api/pair/approval/approve` | `200 OK` with `status: "approved" \| "cancelled"` and `expiresAt` | `400 bad_json`, `400 approval_approve_invalid`, `401 owner_session_required`, `403 approval_origin_invalid`, `403 approval_csrf_invalid`, `404 approval_not_found`, `409 approval_not_pending`, `410 approval_expired`, `429 approval_approve_rate_limited` |
+| `POST /api/pair/approval/claim` | `200 OK` with `status: "pending"`, `status: "approved"` plus `pairCode`, or `status: "claimed"` | `400 bad_json`, `400 approval_claim_invalid`, `403 approval_claim_denied`, `404 approval_not_found`, `409 approval_cancelled`, `409 approval_pair_code_issued`, `410 approval_expired`, `423 approval_locked`, `429 approval_claim_rate_limited` |
+| `GET /api/pair/approval/status` | `200 OK` with `pending`, `approved`, `claimed`, `expired`, or `cancelled` UI state | `401 owner_session_required`, `404 approval_not_found`, `429 approval_status_rate_limited` |
+
+All non-2xx responses use the existing canonical JSON error envelope:
+
+```json
+{
+  "error": {
+    "code": "approval_expired",
+    "message": "Approval expired."
+  }
+}
+```
+
+`approval/status` may return `expired` or `cancelled` as HTTP 200 because it is
+an owner-session UI status poll. `approval/claim` returns HTTP 409/410 for those
+terminal states because it is the machine credential-release exchange path.
+
 Approval persistence:
 
 - Add a migration for a new approval-record table before implementing these
   endpoints.
 - Minimal fields: approval id, nonce hash, verifier challenge, CSRF token hash,
-  state, machine preview metadata, createdAt, expiresAt, approvedAt,
-  cancelledAt, claimedAt, claimedMachineId, claim failure count, and last
-  failure metadata needed for rate limiting.
+  comparison code hash, state, machine preview metadata, createdAt, expiresAt,
+  approvedAt, cancelledAt, pairCodeIssuedAt, approvalPairingId,
+  claimedAt, claimedMachineId, claim failure count, and last failure metadata
+  needed for rate limiting.
 - The table stores no pair code, machine token, setup token, or plaintext
   verifier.
 - `approval/claim` creates the one-time pair code only after the approval record
@@ -358,6 +419,11 @@ Guardrails:
 - Approval claim rejects absent, malformed, or challenge-mismatched verifier.
 - Approval claim is rate-limited and attempt-bounded because it releases the
   one-time pair code.
+- Approval claim allows max 60 pending polls per minute per approval id, max 60
+  pending polls per minute per source IP, and max 5 verifier failures per
+  approval id. The 6th verifier failure locks the approval with HTTP 423
+  `approval_locked`; locked approvals never release pair code and must be
+  restarted with `neul login`.
 - Approval page shows requesting machine context before the owner approves.
 - Approval approve validates owner session, same-origin request headers, and a
   per-approval CSRF token.
@@ -452,6 +518,35 @@ Required contract edits:
 - Add positive `scripts/validate-packaged-client-docs.sh` assertions for
   `neul login --server <origin>`, `browser-safe approval handoffs`, and
   `browserSafeApprovalHandoffs`.
+- Update `scripts/validate-packaged-client-docs.sh` per assertion:
+  - In `packaged_primary_flow`, delete the `docs/mvp.md`
+    `neul://enroll?server=` check and replace it with
+    `neul login --server <origin>`.
+  - In `packaged_primary_flow`, delete the `docs/mvp.md` `local callback`
+    check and replace it with `browser approval polling`.
+  - In `packaged_primary_flow`, change the `web/src/copy.ts`
+    `neul enroll --server <origin>` check to
+    `neul login --server <origin>`.
+  - In `packaged_primary_flow`, delete the `internal/domain/contracts.md`
+    `neul://enroll?server=` check and replace it with
+    `POST /api/pair/approval/claim`.
+  - In `fallback_debug_separation`, change the `web/src/copy.ts` fallback
+    command check from `--pair <token>` to `--pair <pair-code>`.
+  - In `fallback_debug_separation`, change all primary-flow absent checks for
+    `--pair <token>` to `--pair <pair-code>` while keeping the broader
+    `--pair` absent checks.
+  - In `security_model_guardrails`, delete the `Device code is fallback-only`
+    checks for `docs/mvp.md` and `internal/domain/contracts.md`.
+  - In `security_model_guardrails`, change `allowed pair-token handoffs` and
+    `Allowed pair-token handoffs` checks to `browser-safe approval handoffs`.
+  - In `security_model_guardrails`, replace the
+    `local callback binds to 127.0.0.1 only` check with
+    `approval claim is machine-client polling`.
+  - In `security_model_guardrails`, change the `web/src/copy.ts`
+    `allowedPairTokenHandoffs` check to `browserSafeApprovalHandoffs`.
+  - Keep the final guard that rejects `packaged-client command bridge`, and add
+    an equivalent guard rejecting `allowedPairTokenHandoffs` in docs and web
+    copy after the rename.
 - Update `web/src/copy.ts` and `web/src/copy.test.ts` together so the security
   copy shape is fully renamed from pair-token wording to pair-code and
   approval-handoff wording:
@@ -613,16 +708,28 @@ Go tests:
   server polling fails, or config already exists.
 - approval start/approve/claim binds nonce and verifier to approval and requires
   owner session for approval.
-- approval start is unauthenticated but rate-limited and TTL-bounded.
+- approval start is unauthenticated but rate-limited at 10/minute/IP and
+  30/hour/IP, TTL-bounded, and returns a browser/terminal comparison code.
 - approval records persist nonce hash, verifier challenge, CSRF token hash,
-  state, machine preview metadata, expiry, claim failure count, and claimed
-  machine id without storing pair code, machine token, setup token, or plaintext
+  comparison code hash, state, machine preview metadata, expiry,
+  pairCodeIssuedAt, approvalPairingId, claim failure count, and claimed machine
+  id without storing pair code, machine token, setup token, or plaintext
   verifier.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
-- approval claim rate-limits repeated attempts and locks or expires approval
-  after repeated verifier failures.
+- approval claim rate-limits pending polls at 60/minute per approval id and
+  60/minute per source IP.
+- approval claim locks the approval with `approval_locked` on the 6th verifier
+  failure and never releases a pair code after lock.
+- approval claim returns `approval_pair_code_issued` after the one-time pair
+  code has already been issued but before `/api/pair/claim` consumes it, and
+  returns `claimed` after `/api/pair/claim` consumes it.
+- approval claim returns canonical error envelopes and status codes for invalid
+  input, denied verifier, not found, cancelled, expired, locked, and
+  rate-limited states.
+- approval-created pair codes expire 10 minutes after pair-code creation, not
+  10 minutes after approval start.
 - verifier generation uses at least 32 bytes of randomness.
 - `/api/pair/claim` rejects mismatched machine metadata for approval-created
   pair codes before creating machine credentials.
