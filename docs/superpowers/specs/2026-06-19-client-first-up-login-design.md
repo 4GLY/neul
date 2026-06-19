@@ -4,9 +4,10 @@
 
 ## Purpose
 
-Neul의 첫 client-first implementation slice는 canonical contract를
-`neul enroll --server <origin>` primary에서 `neul login --server <origin>`
-primary로 바꾸고, `neul up`을 service/fleet steady-state 명령으로 분리한다.
+Neul의 첫 client-first implementation slice는 아직 구현되지 않은 canonical
+packaged-client command인 `neul enroll --server <origin>`을
+`neul login --server <origin>`으로 교체하고, `neul up`을 service/fleet
+steady-state 명령으로 분리한다.
 
 제품 모델은 Tailscale과 비슷하다.
 
@@ -28,8 +29,8 @@ Included:
 
 - `neul up` command surface
 - `neul login --server <origin>` command surface
-- compatibility alias or deprecation path for current `neul enroll --server
-  <origin>` contract
+- canonical docs/tests migration from planned `neul enroll --server <origin>`
+  to `neul login --server <origin>`
 - local callback based browser approval
 - pair claim and local config write with `0600` permissions
 - first heartbeat gated "joined fleet" success
@@ -101,10 +102,9 @@ Flow:
    API.
 8. Claim the pair code with machine metadata through `/api/pair/claim`.
 9. Write local config with `0600` permissions.
-10. Run one machine-token heartbeat tick or install/kickstart the user-level
-   agent.
-11. Report success as fleet membership only after the heartbeat tick succeeds
-   or the agent status file records a successful heartbeat.
+10. Run one machine-token heartbeat tick.
+11. Report success as fleet membership only after the server accepts that
+   heartbeat. A local status file alone is not enough to claim fleet membership.
 
 Primary success copy should read like:
 
@@ -137,6 +137,10 @@ Target endpoints:
 - client nonce
 - verifier challenge
 - callback URL bound to `127.0.0.1`
+
+The server validates the callback URL before storing the approval record. It
+must reject any callback URL whose parsed host is not loopback
+(`127.0.0.1`, `[::1]`, or `localhost`) or whose scheme is not `http`.
 
 It returns an approval URL that the CLI opens in the browser.
 
@@ -179,6 +183,19 @@ wake-up signal; the sensitive exchange happens from CLI to server.
 `internal/domain/contracts.md`, `docs/mvp.md`, README packaged-primary copy, and
 web onboarding tests must be updated in the same implementation change.
 
+Required contract edits:
+
+- Replace the planned primary packaged-client command
+  `neul enroll --server <origin>` with `neul login --server <origin>`.
+- Rewrite the approval API subsection so it includes
+  `POST /api/pair/approval/claim`, nonce/verifier binding, and loopback callback
+  wake-up semantics.
+- Remove the old claim that `approval/approve` delivers a pair token through
+  the local callback or `neul://...&pair=<token>`.
+- State that browser approval never receives pair code, pair token, or machine
+  token.
+- Keep `/api/pair/claim` as the only endpoint that creates machine credentials.
+
 New primary command:
 
 ```sh
@@ -187,8 +204,10 @@ neul login --server <origin>
 
 Compatibility:
 
-- `neul enroll --server <origin>` may remain as an alias while docs and tests
-  migrate.
+- No top-level `neul enroll` exists in the current CLI, so this slice does not
+  need to preserve an implemented top-level alias.
+- A top-level `neul enroll` alias may be added only if the implementer wants a
+  migration shim for older docs or package scripts.
 - `neul agent enroll --server <origin> --pair <pair-code> --connect-once`
   remains fallback/debug only.
 - `neul init --pair --server` remains legacy/debug only.
@@ -242,7 +261,7 @@ neul login --server <origin>
   -> CLI exchanges approval for pair code
   -> CLI claims pair code
   -> config saved 0600
-  -> first heartbeat tick succeeds or agent status shows heartbeat
+  -> server accepts first machine-token heartbeat
   -> joined fleet copy
 ```
 
@@ -276,11 +295,12 @@ Go tests:
   config.
 - `neul login --server <origin>` starts approval, receives callback, claims
   pair code, writes config mode `0600`, and reports fleet membership only after
-  heartbeat success.
+  server-accepted heartbeat success.
 - `neul login` fails clearly when callback bind fails, approval expires, owner
   session is missing, or config already exists.
 - approval start/approve/claim binds nonce and verifier to callback and requires
   owner session for approval.
+- approval start rejects non-loopback callback URLs.
 - callback rejects mismatched nonce.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
