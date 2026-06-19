@@ -11,9 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -216,7 +214,7 @@ type approvalJSONRequest struct {
 }
 
 func decodeApprovalJSON(request approvalJSONRequest) error {
-	response, err := http.Post(request.Endpoint, "application/json", bytes.NewReader(request.Encoded))
+	response, err := cliHTTPClient.Post(request.Endpoint, "application/json", bytes.NewReader(request.Encoded))
 	if err != nil {
 		return fmt.Errorf("post %s: %w", request.Endpoint, err)
 	}
@@ -252,15 +250,4 @@ func printLoginFailure(stdout io.Writer, serverURL string, err error) {
 
 func printRecoverableLoginFailure(stdout io.Writer, serverURL string) {
 	_, _ = fmt.Fprintf(stdout, "로그인을 완료하지 못했습니다. 다시 실행: neul login --server %s\n", serverURL)
-}
-
-func normalizeServerOrigin(raw string) (string, error) {
-	if raw == "" {
-		return "", errors.New("login requires --server")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", errors.New("login requires --server <origin>")
-	}
-	return strings.TrimRight(raw, "/"), nil
 }

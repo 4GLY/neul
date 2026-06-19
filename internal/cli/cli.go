@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 var agentServiceGOOS = runtime.GOOS
+var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -141,7 +143,7 @@ func claimPairingCode(serverURL string, pairCode string) (claimResponse, error) 
 		return claimResponse{}, fmt.Errorf("encode claim: %w", err)
 	}
 	url := strings.TrimRight(serverURL, "/") + "/api/pair/claim"
-	response, err := http.Post(url, "application/json", bytes.NewReader(encoded))
+	response, err := cliHTTPClient.Post(url, "application/json", bytes.NewReader(encoded))
 	if err != nil {
 		return claimResponse{}, fmt.Errorf("claim pairing code: %w", err)
 	}
