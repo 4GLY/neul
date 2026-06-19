@@ -4,9 +4,9 @@
 
 ## Purpose
 
-Neul의 첫 client-first implementation slice는 `neul up`을 service/fleet
-steady-state 명령으로, `neul login`을 interactive browser auth/enroll 명령으로
-분리한다.
+Neul의 첫 client-first implementation slice는 canonical contract를
+`neul enroll --server <origin>` primary에서 `neul login --server <origin>`
+primary로 바꾸고, `neul up`을 service/fleet steady-state 명령으로 분리한다.
 
 제품 모델은 Tailscale과 비슷하다.
 
@@ -28,6 +28,8 @@ Included:
 
 - `neul up` command surface
 - `neul login --server <origin>` command surface
+- compatibility alias or deprecation path for current `neul enroll --server
+  <origin>` contract
 - local callback based browser approval
 - pair claim and local config write with `0600` permissions
 - first heartbeat gated "joined fleet" success
@@ -67,12 +69,16 @@ Fresh machine behavior:
 Already joined behavior:
 
 1. Read local config.
-2. Check the configured server and machine/agent state when possible.
-3. On macOS, start or verify the user-level agent using the existing
-   LaunchAgent-oriented service surface.
-4. Print a short fleet status summary.
-5. If the agent is not healthy, explain the recoverable state:
-   `server_unreachable`, `agent_not_running`, `heartbeat_not_visible`, or
+2. Read local agent status from the existing status file.
+3. On macOS, verify the LaunchAgent with the existing `agent status` probe and
+   install/kickstart with the existing `agent install` LaunchAgent path when the
+   config and agent binary are present.
+4. Optionally run one machine-token heartbeat tick to prove the server accepts
+   the stored machine credential. `neul up` must not call owner-session routes
+   such as `/api/dashboard`, `/api/machines`, or `/api/machines/:machineId`.
+5. Print a short locally-derived fleet status summary.
+6. If the agent is not healthy, explain the recoverable state:
+   `server_unreachable`, `agent_not_running`, `local_heartbeat_missing`, or
    `auth_invalid`.
 
 `neul up` must not silently overwrite existing credentials. Any force/re-enroll
@@ -90,11 +96,15 @@ Flow:
    port.
 4. Request a browser approval URL from the server.
 5. Open the owner browser.
-6. Wait for the callback.
-7. Claim the pair token with machine metadata.
-8. Write local config with `0600` permissions.
-9. Run one connection tick or start the user-level agent.
-10. Report success as fleet membership, not as pair-token mechanics.
+6. Wait for the callback or poll the approval status.
+7. Exchange the approval nonce/verifier for an opaque pair code over the server
+   API.
+8. Claim the pair code with machine metadata through `/api/pair/claim`.
+9. Write local config with `0600` permissions.
+10. Run one machine-token heartbeat tick or install/kickstart the user-level
+   agent.
+11. Report success as fleet membership only after the heartbeat tick succeeds
+   or the agent status file records a successful heartbeat.
 
 Primary success copy should read like:
 
@@ -125,13 +135,20 @@ Target endpoints:
 
 - server origin
 - client nonce
+- verifier challenge
 - callback URL bound to `127.0.0.1`
 
 It returns an approval URL that the CLI opens in the browser.
 
 `approval/approve` is a CSRF-protected owner-session action. It creates a
-short-lived, single-use pair token bound to the client nonce and delivers it
-only through the approved local callback or supported deep link path.
+short-lived approval record bound to the client nonce and verifier challenge.
+It does not put pair code, pair token, or machine token in the browser URL.
+
+`POST /api/pair/approval/claim` is a machine-client action that receives the
+approval id, nonce, and verifier. If the owner approved the request, the server
+creates or returns one opaque pair code from the same `pairing_codes` storage
+used by `/api/pair/init`. The CLI then calls the existing `/api/pair/claim`
+with that code and machine metadata.
 
 The implementation should reuse the existing pair claim machinery instead of
 creating a second machine registration system. Existing `/api/pair/claim`
@@ -140,14 +157,43 @@ remains the credential creation point.
 Guardrails:
 
 - Owner browser session is required to approve.
-- Pair token is single-use and short-lived.
-- Pair token is never written to server logs.
-- Browser code must not store pair token in localStorage.
-- Browser code must not place pair token in `document.title`.
-- Primary approval URL must not expose pair token in a general browser URL.
+- Pair code is single-use and short-lived.
+- Pair code and machine token are never written to server logs.
+- Browser code must not receive or store pair code or machine token in
+  localStorage.
+- Browser code must not place pair code or machine token in `document.title`.
+- Primary approval URL must not expose pair code or machine token in a general
+  browser URL.
 - Local callback listener is single-shot and closes after success, rejection, or
   timeout.
+- Local callback carries only approval id, approved/cancelled state, and nonce.
+  The CLI rejects callbacks whose nonce does not match the generated nonce.
 - Concurrent `neul login` runs use distinct nonces and callback ports.
+
+This avoids relying on browser `fetch` from the server origin to
+`http://127.0.0.1:<port>` with a bearer credential. The local callback is only a
+wake-up signal; the sensitive exchange happens from CLI to server.
+
+## Contract Update
+
+`internal/domain/contracts.md`, `docs/mvp.md`, README packaged-primary copy, and
+web onboarding tests must be updated in the same implementation change.
+
+New primary command:
+
+```sh
+neul login --server <origin>
+```
+
+Compatibility:
+
+- `neul enroll --server <origin>` may remain as an alias while docs and tests
+  migrate.
+- `neul agent enroll --server <origin> --pair <pair-code> --connect-once`
+  remains fallback/debug only.
+- `neul init --pair --server` remains legacy/debug only.
+- No fallback/debug command may replace `neul login --server <origin>` as the
+  primary product command.
 
 ## Web Onboarding
 
@@ -163,7 +209,7 @@ neul login --server <origin>
 Secondary fallback/debug copy stays available until packaged approval ships:
 
 ```sh
-go run ./cmd/neul agent enroll --server <origin> --pair <pair_...> --connect-once
+go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once
 ```
 
 Rules:
@@ -193,9 +239,10 @@ neul login --server <origin>
   -> local callback starts
   -> browser approval opens
   -> owner approves
-  -> CLI claims pair token
+  -> CLI exchanges approval for pair code
+  -> CLI claims pair code
   -> config saved 0600
-  -> first tick or agent start
+  -> first heartbeat tick succeeds or agent status shows heartbeat
   -> joined fleet copy
 ```
 
@@ -204,9 +251,10 @@ Already joined:
 ```text
 neul up
   -> config exists
-  -> server/agent state checked
-  -> macOS user-level agent started or verified
-  -> fleet status summary printed
+  -> local status and LaunchAgent state checked
+  -> optional machine-token heartbeat tick checks server/auth
+  -> macOS user-level agent installed/kickstarted or verified
+  -> local fleet status summary printed
 ```
 
 Not healthy:
@@ -227,11 +275,18 @@ Go tests:
 - `neul up` with existing config does not call pair claim and does not overwrite
   config.
 - `neul login --server <origin>` starts approval, receives callback, claims
-  pair token, writes config mode `0600`, and reports fleet membership.
+  pair code, writes config mode `0600`, and reports fleet membership only after
+  heartbeat success.
 - `neul login` fails clearly when callback bind fails, approval expires, owner
   session is missing, or config already exists.
-- approval start/approve binds nonce to callback and requires owner session.
-- pair token can be claimed once.
+- approval start/approve/claim binds nonce and verifier to callback and requires
+  owner session for approval.
+- callback rejects mismatched nonce.
+- pair code can be claimed once.
+- `neul up` does not call owner-session dashboard or machine routes.
+- `neul up` uses existing `agent install`/`agent status` primitives, not the
+  current unimplemented `agent start` stub, unless that stub is completed in the
+  same change.
 
 Web tests:
 
@@ -254,8 +309,6 @@ Manual QA:
 
 ## Open Questions Deferred
 
-- How `neul up` should choose a default server when no config exists and no
-  `--server` is passed.
 - Whether `neul login` should support a future hosted default origin.
 - Whether recovery should be `neul logout`, `neul reset`, or a more explicit
   revoke/re-enroll command.
