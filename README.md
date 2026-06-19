@@ -95,10 +95,13 @@ curl -i -c .demo/cookies.txt \
 
 <!-- packaged-primary:start -->
 
-제품의 primary path는 packaged `neul` client를 설치한 뒤 browser approval로
-enroll하는 흐름이다. 현재 로컬 데모에서는 packaged binary 배포 전이므로 아래
-checkout-local fallback/debug 명령으로 같은 server, pair claim, heartbeat
-경로를 검증한다.
+제품의 primary path는 packaged `neul` client를 설치한 뒤
+`neul login --server <origin>`으로 browser approval enrollment를 완료하고,
+`neul up`으로 durable agent running/connected 상태를 확인하는 흐름이다.
+`neul login`은 local machine credential만 만들고, connected 상태는
+long-running agent heartbeat를 확인하는 `neul up`이 맡는다. 현재 로컬
+데모에서는 packaged binary 배포 전이므로 아래 checkout-local fallback/debug
+명령으로 같은 server, `/api/pair/claim`, heartbeat 경로를 검증한다.
 
 4GL-87 macOS package QA uses an unsigned dev `.pkg` for local testing only. The
 package installs `/usr/local/bin/neul` and `/usr/local/libexec/neul-agent`;
@@ -110,10 +113,11 @@ Installer certificates, notarization, and stapling before publishing.
 ### fallback/debug: checkout-local enrollment
 
 개발자나 QA가 packaged client 없이 로컬 checkout에서 enroll 경로를 검증해야
-할 때만 pair token을 만든 뒤 다음 fallback/debug 명령을 직접 실행한다. 이
+할 때만 pair code를 만든 뒤 다음 fallback/debug 명령을 직접 실행한다. 이
 명령은 웹 wizard의 primary copy가 아니다. packaged approval flow가 구현되기
 전까지 wizard는 이 명령을 primary packaged 명령 아래 fallback/debug로 별도
-표시한다.
+표시한다. 명령 형식은 `--pair <pair-code>`이고, 아래의 `pair_...`는 실제
+one-time pair code 값의 예시다.
 
 ```sh
 go run ./cmd/neul agent enroll --server http://127.0.0.1:<PORT> --pair pair_... --connect-once

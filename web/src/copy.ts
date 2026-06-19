@@ -48,22 +48,28 @@ export const onboardingCopy = {
 		"Linux: Debian/Ubuntu .deb 또는 tarball",
 	],
 	checkoutHint: "Run with packaged neul client:",
-	commandTemplate: "neul enroll --server <origin>",
+	commandTemplate: "neul login --server <origin>",
 	fallbackHint:
 		"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 	fallbackCommandTemplate:
-		"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
+		"go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once",
 	security: {
-		pairTokenKind: "bearer",
-		neverStorePairTokenIn: [
-			"general URL query strings outside enrollment handoff",
+		pairCodeKind: "one-time /api/pair/claim value",
+		neverStorePairCodeIn: [
+			"browser copy",
+			"general URL query strings",
 			"document.title",
 			"browser history",
+			"localStorage",
+			"logs",
 		],
-		allowedPairTokenHandoffs: [
-			"127.0.0.1 local callback",
-			"neul:// enrollment deep link",
-			"fallback/debug command",
+		browserSafeApprovalHandoffs: [
+			"approval id",
+			"nonce",
+			"comparison code",
+			"machine preview metadata",
+			"CSRF",
+			"status",
 		],
 	},
 } as const;

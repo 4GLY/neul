@@ -44,24 +44,33 @@ describe("Korean-first copy", () => {
 			"Linux: Debian/Ubuntu .deb 또는 tarball",
 		]);
 		expect(copy.onboarding.commandTemplate).toBe(
-			"neul enroll --server <origin>",
+			"neul login --server <origin>",
 		);
 		expect(copy.onboarding.fallbackCommandTemplate).toBe(
-			"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
+			"go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once",
 		);
 	});
 
-	it("documents pair-token handling as a browser leak guardrail", () => {
-		expect(copy.onboarding.security.pairTokenKind).toBe("bearer");
-		expect(copy.onboarding.security.neverStorePairTokenIn).toEqual([
-			"general URL query strings outside enrollment handoff",
+	it("documents pair-code handling as a browser leak guardrail", () => {
+		expect(copy.onboarding.security.pairCodeKind).toContain(
+			"/api/pair/claim",
+		);
+		expect(copy.onboarding.security.neverStorePairCodeIn).toEqual([
+			"browser copy",
+			"general URL query strings",
 			"document.title",
 			"browser history",
+			"localStorage",
+			"logs",
 		]);
-		expect(copy.onboarding.security.allowedPairTokenHandoffs).toEqual([
-			"127.0.0.1 local callback",
-			"neul:// enrollment deep link",
-			"fallback/debug command",
+		expect(copy.onboarding.security.browserSafeApprovalHandoffs).toEqual([
+			"approval id",
+			"nonce",
+			"comparison code",
+			"machine preview metadata",
+			"CSRF",
+			"status",
 		]);
+		expect(JSON.stringify(copy)).not.toContain("allowedPairTokenHandoffs");
 	});
 });

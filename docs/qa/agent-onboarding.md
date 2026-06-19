@@ -1,8 +1,9 @@
 # Agent onboarding QA
 
 This QA note covers Agent Onboarding UX v2. The target product path is packaged
-client install, browser approval, local callback or `neul://` handoff, user
-agent start, and dashboard connected state after the first heartbeat.
+client install, `neul login --server <origin>` browser approval, `neul up`
+agent start, and dashboard connected state after the first long-running agent
+heartbeat.
 
 ## Browser happy path
 
@@ -15,14 +16,16 @@ agent start, and dashboard connected state after the first heartbeat.
 - Local macOS dev package build: `scripts/build-macos-dev-pkg.sh`.
 - Production macOS distribution requires Developer ID Application and Developer
   ID Installer certificates, notarization, and stapling.
-- Enroll command with packaged client:
-  `neul enroll --server http://127.0.0.1:18085`
+- Login command with packaged client:
+  `neul login --server http://127.0.0.1:18085`
+- Durable agent command after login:
+  `neul up`
 - Explicit package-QA fallback command with installed binary:
-  `neul agent enroll --server http://127.0.0.1:18085 --pair <pair-token> --connect-once`
+  `neul agent enroll --server http://127.0.0.1:18085 --pair <pair-code> --connect-once`
 - LaunchAgent registration after package-QA enrollment:
   `neul agent install`
 - Transitional executable command before packaged approval ships:
-  `go run ./cmd/neul agent enroll --server http://127.0.0.1:18085 --pair <pair-token> --connect-once`
+  `go run ./cmd/neul agent enroll --server http://127.0.0.1:18085 --pair <pair-code> --connect-once`
 - Expected browser result: the generated command disappears after the CLI connects, and the machine row shows `Connected`.
 - Screenshot: `evidence/task-4-agent-onboarding-wizard-browser.png`
 - CLI transcript: `evidence/task-4-agent-onboarding-wizard-browser-log.txt`
@@ -35,11 +38,15 @@ agent start, and dashboard connected state after the first heartbeat.
 - Screenshot: `evidence/task-4-agent-onboarding-expired-browser.png`
 - Log: `evidence/task-4-agent-onboarding-expired-browser-log.txt`
 
-## CLI enroll
+## CLI login/up
 
 - Command:
-  `neul enroll --server http://127.0.0.1:18084`
-- Expected stdout: `Machine enrolled`, `Connecting`, `Connected`
+  `neul login --server http://127.0.0.1:18084`
+- Expected login stdout: enrollment succeeds and points the user to `neul up`.
+- Follow-up command:
+  `neul up`
+- Expected up stdout: durable agent running/connected state is reported only
+  after a fresh long-running heartbeat.
 - Expected config: `<temp>/config/config.json` exists with mode `0600`
 - Expected server state: `GET /api/dashboard` shows one healthy machine with `lastHeartbeatAt`
 - Transcript: `evidence/task-5-agent-enroll-tmux.txt`
@@ -47,13 +54,13 @@ agent start, and dashboard connected state after the first heartbeat.
 ## Fallback/debug checkout-local enrollment
 
 - Command:
-  `env -u GOROOT go run ./cmd/neul agent enroll --server http://127.0.0.1:18084 --pair <pair-token> --config-dir <temp>/config --connect-once`
+  `env -u GOROOT go run ./cmd/neul agent enroll --server http://127.0.0.1:18084 --pair <pair-code> --config-dir <temp>/config --connect-once`
 - Expected stdout: `Machine enrolled`, `Connecting`, `Connected`
 - Expected config: `<temp>/config/config.json` exists with mode `0600`
 - Expected server state: `GET /api/dashboard` shows one healthy machine with `lastHeartbeatAt`
 - Use this path only for local checkout QA before packaged binaries exist.
 - The web wizard may also show this command in a separate fallback/debug block
-  until the packaged approval and deep-link flow ships.
+  until the packaged approval polling flow ships.
 
 ## Existing config and force
 
@@ -74,7 +81,10 @@ agent start, and dashboard connected state after the first heartbeat.
 - Native GUI and menubar client are not shipped.
 - Real launchd/systemd installation is not shipped.
 - OAuth, SSO, hosted login, teams, billing, and WebSocket onboarding push are out of scope.
-- Pair tokens are bearer credentials. Allowed pair-token handoffs are
-  `127.0.0.1` local callback, `neul://` enrollment deep link, and the
-  fallback/debug command. Pair tokens must not be stored in general URL query
-  strings outside those handoffs, `document.title`, browser history, or logs.
+- Browser-safe approval handoffs are approval id, nonce, comparison code,
+  machine preview metadata, CSRF, and status only. Browser copy, URL query
+  strings, `document.title`, browser history, localStorage, and logs must not
+  contain pair code, pair token, machine token, setup token, or plaintext
+  verifier values.
+- Fallback/debug copy may show `--pair <pair-code>` only in the secondary
+  checkout-local or package-QA command.
