@@ -31,9 +31,11 @@ heartbeat.
 - CLI transcript: `evidence/task-4-agent-onboarding-wizard-browser-log.txt`
 - Cleanup receipt: `evidence/task-4-agent-onboarding-cleanup.txt`
 
-## Expired invite retry
+## Expired approval retry
 
-- Browser action: click `첫 머신 등록`, then route `/api/pair/poll` to return `{"status":"expired","expiresAt":"2026-06-06T12:10:00Z"}`
+- Browser action: click `첫 머신 등록`, then route
+  `/api/pair/approval/status` to return
+  `{"status":"expired","expiresAt":"2026-06-06T12:10:00Z"}`
 - Expected result: browser shows `등록 시간이 만료되었습니다` and `다시 만들기`.
 - Screenshot: `evidence/task-4-agent-onboarding-expired-browser.png`
 - Log: `evidence/task-4-agent-onboarding-expired-browser-log.txt`

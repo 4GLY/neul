@@ -10,7 +10,7 @@ describe("OnboardingWizard", () => {
 		document.body.innerHTML = "";
 	});
 
-	it("creates an invite and renders the packaged-client enroll command", async () => {
+	it("creates an invite and renders the packaged-client login command", async () => {
 		const calls = stubFetchSequence([
 			{ code: "pair_123", expiresAt: "2026-06-06T12:10:00Z" },
 		]);
@@ -36,7 +36,7 @@ describe("OnboardingWizard", () => {
 			"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 		);
 		expect(commands).toEqual([
-			"neul enroll --server http://localhost:3000",
+			"neul login --server http://localhost:3000",
 			"go run ./cmd/neul agent enroll --server http://localhost:3000 --pair pair_123 --connect-once",
 		]);
 		expect(commands[0]).not.toContain("pair_123");

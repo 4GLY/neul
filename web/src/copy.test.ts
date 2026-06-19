@@ -52,9 +52,7 @@ describe("Korean-first copy", () => {
 	});
 
 	it("documents pair-code handling as a browser leak guardrail", () => {
-		expect(copy.onboarding.security.pairCodeKind).toContain(
-			"/api/pair/claim",
-		);
+		expect(copy.onboarding.security.pairCodeKind).toContain("/api/pair/claim");
 		expect(copy.onboarding.security.browserExcludedCredentials).toEqual([
 			"pair code",
 			"pair token",

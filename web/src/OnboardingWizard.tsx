@@ -148,7 +148,7 @@ export function OnboardingWizard({
 		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
 			return "";
 		}
-		return `neul enroll --server ${window.location.origin}`;
+		return `neul login --server ${window.location.origin}`;
 	}, [state]);
 
 	const fallbackCommand = useMemo(() => {
