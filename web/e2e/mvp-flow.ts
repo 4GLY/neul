@@ -32,19 +32,25 @@ export async function visibleOnboardMachine(
 		)
 		.waitFor();
 	const generated = await page.locator("code").first().textContent();
+	const expectedPrimaryCommand = `neul login --server ${fixture.baseURL}`;
 	if (
 		generated === null ||
+		generated.trim() !== expectedPrimaryCommand ||
 		generated.includes("--pair") ||
-		generated.includes("go run") ||
-		!generated.includes("neul login --server")
+		generated.includes("go run")
 	) {
 		throw new Error(`generated command missing: ${generated}`);
 	}
 	const fallback = await page.locator("code").nth(1).textContent();
+	const pairCode = fallback?.match(/(?:^|\s)--pair\s+(\S+)/)?.[1];
 	if (
 		fallback === null ||
 		!fallback.includes("go run ./cmd/neul agent enroll") ||
-		!fallback.includes("--pair") ||
+		pairCode === undefined ||
+		pairCode.length === 0 ||
+		pairCode === "<pair-code>" ||
+		pairCode.includes("<") ||
+		pairCode.includes(">") ||
 		!fallback.includes("--connect-once")
 	) {
 		throw new Error(`fallback command missing: ${fallback}`);
