@@ -165,14 +165,17 @@ and nonce, for example:
 
 `approval/start` is unauthenticated because a fresh CLI has no owner session.
 It must be abuse-bounded with short TTL records, per-callback/per-IP rate
-limits, and no secret material in the response.
+limits, and no secret material in the response. Approval records expire exactly
+10 minutes after `approval/start`, matching the existing pairing TTL.
 
 `approval/approve` is a CSRF-protected owner-session action. The approval page
 must show the requesting machine context before approval: hostname, OS,
-architecture, agent version, callback host, and requested time. It marks the
-short-lived approval record as approved, bound to the client nonce, verifier
-challenge, callback URL, and machine preview metadata. It does not put pair
-code, pair token, or machine token in the browser URL.
+architecture, agent version, callback host, and requested time. It also includes
+a per-approval CSRF token. The approve POST must validate owner session,
+same-origin `Origin` or `Referer`, and the per-approval CSRF token before
+marking the short-lived approval record as approved, bound to the client nonce,
+verifier challenge, callback URL, and machine preview metadata. It does not put
+pair code, pair token, or machine token in the browser URL.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives the
 approval id, nonce, and verifier. It does not require owner session. Before the
@@ -197,7 +200,7 @@ credential. After pair claim succeeds, the approval record stores the claimed
 `machineId` so owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
-approval page and onboarding wizard. It receives approval id and returns one of:
+CLI-opened approval page. It receives approval id and returns one of:
 `pending`, `approved`, `claimed`, `expired`, `cancelled`, or `error`. The
 `claimed` response includes `machineId` and `claimedAt`.
 
@@ -213,6 +216,8 @@ Guardrails:
 - Approval start is unauthenticated but rate-limited and TTL-bounded.
 - Approval claim rejects absent, malformed, or challenge-mismatched verifier.
 - Approval page shows requesting machine context before the owner approves.
+- Approval approve validates owner session, same-origin request headers, and a
+  per-approval CSRF token.
 - Pair code and machine token are never written to server logs.
 - Browser code must not receive or store pair code or machine token in
   localStorage.
@@ -247,6 +252,14 @@ Required contract edits:
   non-secret status.
 - Replace the planned primary packaged-client command
   `neul enroll --server <origin>` with `neul login --server <origin>`.
+- Rewrite Scope Guardrails so the old "no pending approval table" rule is
+  replaced by this narrower rule: no general pending approval table for
+  owner-created pair codes; short-lived client-started approval records are
+  allowed only for `neul login`, expire in 10 minutes, contain no bearer
+  credentials, and are not a hosted/team approval queue.
+- Rewrite Timing And Version Defaults so `GET /api/pair/poll` remains the
+  source of truth only for fallback/debug pair-code expiry. Approval expiry uses
+  `GET /api/pair/approval/status` and the same 10 minute TTL.
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
   nonce/verifier binding, and loopback callback wake-up semantics.
@@ -257,7 +270,7 @@ Required contract edits:
 - State that `approval/claim` must verify the submitted verifier against the
   stored verifier challenge before returning a pair code.
 - State that `approval/status` is owner-session-only and exists for approval
-  page/onboarding status, not for CLI polling.
+  page status, not for CLI polling.
 - State that approval pages show requesting machine context before owner
   approval.
 - Remove the old claim that `approval/approve` delivers a pair token through
@@ -283,6 +296,9 @@ Required contract edits:
   `allowedPairTokenHandoffs` validation strings with browser-safe approval
   guardrail strings. The replacement doc text should use the phrase
   `browser-safe approval handoffs`; the replacement copy key should be
+  `browserSafeApprovalHandoffs`.
+- Add positive `scripts/validate-packaged-client-docs.sh` assertions for
+  `neul login --server <origin>`, `browser-safe approval handoffs`, and
   `browserSafeApprovalHandoffs`.
 - Update `web/src/copy.ts` so `browserSafeApprovalHandoffs` says browser
   approval receives only approval id, nonce, and non-secret status; pair code,
@@ -341,11 +357,13 @@ Rules:
 
 - The primary command must not include `--pair`.
 - The fallback/debug block must be visually and semantically secondary.
-- The approval page or onboarding wizard reads the approval id from the
-  approval URL opened by `neul login` and polls
-  `GET /api/pair/approval/status`.
-- After approval status first returns `claimed` with `machineId`, the web shows
-  a waiting state that tells the user to run `neul up`.
+- The existing dashboard onboarding wizard is an instruction surface only: it
+  shows `neul login --server <origin>`, fallback/debug copy, and no approval
+  status polling.
+- The CLI-opened `/enroll/approve?approval=<approval-id>&nonce=<nonce>` page
+  owns approval status polling with `GET /api/pair/approval/status`.
+- After that approval page first sees `claimed` with `machineId`, it shows a
+  waiting state that tells the user to run `neul up`.
 - Connected state is shown only after the first heartbeat makes the machine
   visible in `GET /api/dashboard`.
 - The old 120 second post-claim `agent_not_responding` timer is removed for
@@ -439,18 +457,24 @@ Go tests:
 - callback wake-up is best-effort; claim polling is authoritative.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
-- `neul up` uses existing `agent install`/`agent status` primitives, not the
-  current unimplemented `agent start` stub, unless that stub is completed in the
-  same change.
+- `neul up` reuses existing LaunchAgent install/probe helpers but reads the raw
+  status file itself for structured `mode`, `lastHeartbeatAt`, and `lastError`
+  checks. It does not parse `agent status` text and does not use the current
+  unimplemented `agent start` stub unless that stub is completed in the same
+  change.
+- status receipt provenance is written by both long-running and explicit
+  status-writing one-shot paths when those paths write a status file.
 
 Web tests:
 
 - onboarding primary command is `neul login --server <origin>`.
 - onboarding primary command does not include `--pair`.
 - fallback/debug command includes `--pair` only in the secondary block.
-- onboarding approval polling identifies the claimed machine by `machineId`.
-- onboarding shows "run `neul up`" after approval `claimedAt`.
-- onboarding does not start the old 120 second timeout from login claim.
+- dashboard onboarding wizard does not poll approval status.
+- CLI-opened approval page polling identifies the claimed machine by `machineId`.
+- CLI-opened approval page shows "run `neul up`" after approval `claimedAt`.
+- CLI-opened approval page does not start the old 120 second timeout from login
+  claim.
 - claimed machine moves to connected only after dashboard heartbeat evidence.
 - docs validation script expects the new login/up copy and no longer requires
   pair-token browser handoff copy.
