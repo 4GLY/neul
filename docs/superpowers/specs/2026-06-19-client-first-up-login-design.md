@@ -230,8 +230,9 @@ wake-up signal; the sensitive exchange happens from CLI to server.
 
 ## Contract Update
 
-`internal/domain/contracts.md`, `docs/mvp.md`, README packaged-primary copy, and
-web onboarding tests must be updated in the same implementation change.
+`internal/domain/contracts.md`, `docs/mvp.md`, `docs/qa/agent-onboarding.md`,
+README packaged-primary copy, and web onboarding tests must be updated in the
+same implementation change.
 
 Required contract edits:
 
@@ -270,11 +271,28 @@ Required contract edits:
   attempt, not login claim.
 - Update `scripts/validate-packaged-client-docs.sh` in lockstep with the new
   required strings: `neul login --server <origin>` as primary, no
-  `neul://...&pair=<token>` pair-token handoff requirement, and no
-  `allowedPairTokenHandoffs` copy that says pair tokens are allowed in browser
-  handoff surfaces.
-- Update `web/src/copy.ts` so any pair-token guardrail copy says browser
-  approval never receives pair code, pair token, or machine token.
+  `neul://enroll?server=` or `neul://...&pair=<token>` required-string checks,
+  and no `allowedPairTokenHandoffs` copy that says pair tokens are allowed in
+  browser handoff surfaces.
+- Replace `allowed pair-token handoffs`, `Allowed pair-token handoffs`, and
+  `allowedPairTokenHandoffs` validation strings with browser-safe approval
+  guardrail strings. The replacement doc text should use the phrase
+  `browser-safe approval handoffs`; the replacement copy key should be
+  `browserSafeApprovalHandoffs`.
+- Update `web/src/copy.ts` so `browserSafeApprovalHandoffs` says browser
+  approval receives only approval id, nonce, and non-secret status; pair code,
+  pair token, and machine token stay on CLI/server paths.
+- Update `docs/qa/agent-onboarding.md` so it uses `neul login` for enrollment,
+  `neul up` for connected/running state, and no longer says enroll success
+  equals `Connected`.
+
+Deep link decision:
+
+- This slice drops `neul://` deep-link handoff entirely.
+- The only browser-to-CLI wake-up in scope is the best-effort loopback redirect
+  to `http://127.0.0.1:<port>/callback?...`.
+- A future pair-token-free deep link may be designed later, but it is out of
+  scope for this implementation plan.
 
 New primary command:
 
