@@ -84,3 +84,43 @@ export type ApiPairPollResponse =
 			readonly status: "expired";
 			readonly expiresAt: string;
 	  };
+
+export type ApiApprovalMachine = {
+	readonly name: string;
+	readonly os: string;
+	readonly arch: string;
+	readonly agentVersion: string;
+};
+
+export type ApiApprovalStatusResponse =
+	| {
+			readonly status: "pending" | "approved";
+			readonly approvalId: string;
+			readonly expiresAt: string;
+			readonly csrfToken: string;
+			readonly comparisonCode: string;
+			readonly machine: ApiApprovalMachine;
+			readonly requestedAt?: string;
+	  }
+	| {
+			readonly status: "claimed";
+			readonly machineId: string;
+			readonly claimedAt: string;
+			readonly expiresAt: string;
+	  }
+	| {
+			readonly status: "expired" | "cancelled" | "locked";
+			readonly expiresAt: string;
+	  };
+
+export type ApiApprovalDecisionRequest = {
+	readonly approvalId: string;
+	readonly nonce: string;
+	readonly csrfToken: string;
+	readonly decision: "approve" | "cancel";
+};
+
+export type ApiApprovalDecisionResponse = {
+	readonly status: "approved" | "cancelled";
+	readonly expiresAt: string;
+};
