@@ -79,8 +79,9 @@ Already joined behavior:
    `neul up` must not call owner-session routes such as `/api/dashboard`,
    `/api/machines`, or `/api/machines/:machineId`.
 5. The wait is bounded: record `upStartedAt` before install/kickstart, poll the
-   status file for up to 60 seconds, and treat connected as true only when
-   `lastHeartbeatAt >= upStartedAt` and `lastError` is empty or `null`.
+   status file for up to 60 seconds, and treat connected as true only when the
+   status receipt was written by the long-running agent, `lastHeartbeatAt >=
+   upStartedAt`, and `lastError` is empty or `null`.
 6. On timeout, print `local_heartbeat_missing`; if LaunchAgent install/kickstart
    fails, print `agent_not_running`; if the status file reports auth failure,
    print `auth_invalid`; if it reports server connection failure, print
@@ -185,11 +186,15 @@ metadata must match the machine preview metadata from `approval/start`.
 
 The metadata binding is enforced in `/api/pair/claim`, not only in
 `approval/claim`: approval-created pair codes carry expected hostname, OS,
-architecture, and agent version metadata in server-side storage. When
-`/api/pair/claim` receives metadata for an approval-created code, it rejects any
-mismatch before creating the machine credential. After pair claim succeeds, the
-approval record stores the claimed `machineId` so owner-session browser UI can
-watch the right machine.
+architecture, and agent version metadata in server-side storage. This requires a
+schema change that can distinguish approval-created pair codes from ordinary
+`/api/pair/init` fallback/debug codes. The minimal shape is an approval id or
+source kind plus nullable expected metadata columns on the pairing record.
+Ordinary `/api/pair/init` rows leave those fields empty and keep existing
+fallback/debug behavior. When `/api/pair/claim` receives metadata for an
+approval-created code, it rejects any mismatch before creating the machine
+credential. After pair claim succeeds, the approval record stores the claimed
+`machineId` so owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 approval page and onboarding wizard. It receives approval id and returns one of:
@@ -282,6 +287,9 @@ Required contract edits:
 - Update `web/src/copy.ts` so `browserSafeApprovalHandoffs` says browser
   approval receives only approval id, nonce, and non-secret status; pair code,
   pair token, and machine token stay on CLI/server paths.
+- Update `web/src/copy.ts` `commandTemplate` from `neul enroll --server
+  <origin>` to `neul login --server <origin>`, and update the matching
+  `scripts/validate-packaged-client-docs.sh` required-string check.
 - Update `docs/qa/agent-onboarding.md` so it uses `neul login` for enrollment,
   `neul up` for connected/running state, and no longer says enroll success
   equals `Connected`.
@@ -403,10 +411,12 @@ Go tests:
   pair code, writes config mode `0600`, and reports enrollment success without
   claiming durable connected state.
 - `neul up` with existing config starts/verifies the agent and reports connected
-  only after `lastHeartbeatAt >= upStartedAt` and `lastError` is empty or
-  `null`.
+  only after status provenance is long-running agent, `lastHeartbeatAt >=
+  upStartedAt`, and `lastError` is empty or `null`.
 - `neul up` times out after 60 seconds without a fresh successful heartbeat and
   reports `local_heartbeat_missing`.
+- `neul up` does not accept a connect-once/diagnostic status receipt as durable
+  connected.
 - `neul login` fails clearly when callback bind fails, approval expires, owner
   session is missing, or config already exists.
 - approval start/approve/claim binds nonce and verifier to callback and requires
@@ -420,6 +430,8 @@ Go tests:
   preview metadata.
 - `/api/pair/claim` rejects mismatched machine metadata for approval-created
   pair codes before creating machine credentials.
+- ordinary `/api/pair/init` fallback/debug pair codes still accept existing
+  machine metadata behavior.
 - approval status requires owner session and is not used by CLI polling.
 - approval status returns claimed `machineId` and `claimedAt`, but never returns
   pair code, pair token, or machine token.
@@ -445,15 +457,36 @@ Web tests:
 
 Manual QA:
 
+Fallback demo QA:
+
 1. Run `make demo`.
 2. Create the owner browser session from the setup token.
 3. Open the dashboard onboarding wizard.
-4. Run the primary `neul login --server <origin>` command.
-5. Approve in the browser.
-6. Confirm login reports enrollment complete and points to `neul up`.
-7. Run `neul up`.
-8. Confirm dashboard shows the machine connected only after heartbeat.
-9. Confirm primary CLI/web output does not expose setup, pair, or machine token.
+4. Confirm primary copy is `neul login --server <origin>` and fallback/debug copy
+   is visibly secondary.
+5. Use the fallback/debug `go run ./cmd/neul agent enroll ... --connect-once`
+   path only to prove existing checkout demo enrollment and heartbeat still work.
+
+Packaged macOS QA:
+
+1. Build/install the unsigned local macOS package or otherwise place executable
+   `neul` and `neul-agent` binaries where the LaunchAgent plan expects them.
+2. Run the primary `neul login --server <origin>` command.
+3. Approve in the browser.
+4. Confirm login reports enrollment complete and points to `neul up`.
+5. Run `neul up`.
+6. Confirm `neul up` waits for a long-running-agent status receipt, not a
+   connect-once receipt.
+7. Confirm dashboard shows the machine connected only after heartbeat.
+8. Confirm primary CLI/web output does not expose setup, pair, or machine token.
+
+Status receipt update:
+
+- Add a provenance field to the agent status receipt, for example `mode:
+  "run_loop" | "connect_once"`, and have the long-running agent write
+  `run_loop`.
+- `neul up` uses that provenance plus freshness to distinguish durable agent
+  heartbeat from connect-once or diagnostic heartbeat.
 
 ## Open Questions Deferred
 
