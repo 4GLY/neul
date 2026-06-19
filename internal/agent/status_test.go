@@ -13,6 +13,60 @@ import (
 	"time"
 )
 
+func TestWriteStatus_whenRunLoopMode_writesModeAndAttempt(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "status.json")
+	now := time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC)
+
+	err := writeStatus(statusWriteOptions{
+		Path:                 statusPath,
+		Mode:                 "run_loop",
+		LastHeartbeatAttempt: now,
+		LastError:            &StatusError{Kind: "auth_failure", Message: "invalid token"},
+	})
+
+	if err != nil {
+		t.Fatalf("writeStatus() error = %v", err)
+	}
+	got := readStatusTestReceipt(t, statusPath)
+	if got.Mode != "run_loop" {
+		t.Fatalf("Mode = %q, want run_loop", got.Mode)
+	}
+	if got.LastHeartbeatAttempt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("LastHeartbeatAttempt = %q, want %q", got.LastHeartbeatAttempt, now.Format(time.RFC3339Nano))
+	}
+	if got.LastError == nil || got.LastError.Kind != "auth_failure" {
+		t.Fatalf("LastError = %+v, want auth_failure", got.LastError)
+	}
+}
+
+func TestWriteStatus_whenConnectOnceMode_writesDiagnosticMode(t *testing.T) {
+	dir := t.TempDir()
+	statusPath := filepath.Join(dir, "status.json")
+	now := time.Date(2026, 6, 19, 8, 1, 0, 0, time.UTC)
+
+	err := writeStatus(statusWriteOptions{
+		Path:                 statusPath,
+		Mode:                 "connect_once",
+		LastHeartbeatAttempt: now,
+		LastHeartbeatAt:      now,
+	})
+
+	if err != nil {
+		t.Fatalf("writeStatus() error = %v", err)
+	}
+	got := readStatusTestReceipt(t, statusPath)
+	if got.Mode != "connect_once" {
+		t.Fatalf("Mode = %q, want connect_once", got.Mode)
+	}
+	if got.LastHeartbeatAttempt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("LastHeartbeatAttempt = %q, want %q", got.LastHeartbeatAttempt, now.Format(time.RFC3339Nano))
+	}
+	if got.LastHeartbeatAt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("LastHeartbeatAt = %q, want %q", got.LastHeartbeatAt, now.Format(time.RFC3339Nano))
+	}
+}
+
 func TestStatusReceipt_whenTickSucceeds_writesMachineStatusWithoutToken(t *testing.T) {
 	statusPath := filepath.Join(t.TempDir(), "status.json")
 	server := newStatusTestServer(t, nil)
@@ -116,12 +170,16 @@ func TestRunLoopStatusReceipt_whenTicksRecover_updatesFailureThenSuccess(t *test
 		t.Fatalf("Run() error = %v", err)
 	}
 	status := readStatusTestReceipt(t, statusPath)
+	if status.Mode != "run_loop" {
+		t.Fatalf("Mode = %q, want run_loop", status.Mode)
+	}
 	if status.LastSuccess == "" || status.LastError != nil {
 		t.Fatalf("status = %+v, want recovery success with cleared error", status)
 	}
 }
 
 type statusTestReceipt struct {
+	Mode                 string           `json:"mode"`
 	MachineID            string           `json:"machineId"`
 	ServerURL            string           `json:"serverURL"`
 	LastHeartbeatAttempt string           `json:"lastHeartbeatAttempt"`

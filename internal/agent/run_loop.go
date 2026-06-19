@@ -54,7 +54,14 @@ func (c *Client) Run(ctx context.Context, options RunOptions) error {
 				return nil
 			}
 			kind := classifyTickError(err)
-			if statusErr := c.writeStatus(options.StatusPath, attemptedAt, lastSuccessAt, err); statusErr != nil {
+			if statusErr := c.writeStatus(statusWriteOptions{
+				Path:                 options.StatusPath,
+				Mode:                 statusModeRunLoop,
+				LastHeartbeatAttempt: attemptedAt,
+				LastSuccess:          lastSuccessAt,
+				LastHeartbeatAt:      lastSuccessAt,
+				LastError:            &StatusError{Kind: kind, Message: err.Error()},
+			}); statusErr != nil {
 				logger.Warn("agent status write failed", "error", statusErr)
 			}
 			consecutiveFailures++
@@ -79,7 +86,13 @@ func (c *Client) Run(ctx context.Context, options RunOptions) error {
 		lastFailureKind = ""
 		backoff = c.config.HeartbeatInterval
 		lastSuccessAt = attemptedAt
-		if statusErr := c.writeStatus(options.StatusPath, attemptedAt, lastSuccessAt, nil); statusErr != nil {
+		if statusErr := c.writeStatus(statusWriteOptions{
+			Path:                 options.StatusPath,
+			Mode:                 statusModeRunLoop,
+			LastHeartbeatAttempt: attemptedAt,
+			LastSuccess:          lastSuccessAt,
+			LastHeartbeatAt:      lastSuccessAt,
+		}); statusErr != nil {
 			logger.Warn("agent status write failed", "error", statusErr)
 		}
 		if err := delay(ctx, c.config.HeartbeatInterval); err != nil {
