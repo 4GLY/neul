@@ -83,6 +83,19 @@ func getApprovalRecordForUpdate(ctx context.Context, tx *sql.Tx, approvalID stri
 	return scanApprovalRecord(tx.QueryRowContext(ctx, approvalRecordSelectSQL+` WHERE id = ?`, approvalID))
 }
 
+func getApprovalRecordByPairingIDForUpdate(ctx context.Context, tx *sql.Tx, pairingID string) (approvalRecord, error) {
+	result, err := tx.ExecContext(ctx, `UPDATE approval_records SET id = id WHERE approval_pairing_id = ?`, pairingID)
+	if err != nil {
+		return approvalRecord{}, fmt.Errorf("lock approval record by pairing id: %w", err)
+	}
+	if rowsAffected, err := result.RowsAffected(); err != nil {
+		return approvalRecord{}, fmt.Errorf("read approval pairing rows affected: %w", err)
+	} else if rowsAffected == 0 {
+		return approvalRecord{}, sql.ErrNoRows
+	}
+	return scanApprovalRecord(tx.QueryRowContext(ctx, approvalRecordSelectSQL+` WHERE approval_pairing_id = ?`, pairingID))
+}
+
 func markApprovalApproved(ctx context.Context, tx *sql.Tx, approvalID string, approvedAt string) error {
 	_, err := tx.ExecContext(
 		ctx,
