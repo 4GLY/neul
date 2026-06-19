@@ -97,7 +97,8 @@ Flow:
    port.
 4. Request a browser approval URL from the server.
 5. Open the owner browser.
-6. Wait for the callback or poll the approval status.
+6. Wait for the callback or poll `POST /api/pair/approval/claim` until the
+   owner approves, cancels, or the approval expires.
 7. Exchange the approval nonce/verifier for an opaque pair code over the server
    API.
 8. Claim the pair code with machine metadata through `/api/pair/claim`.
@@ -144,22 +145,33 @@ Target endpoints:
 - callback URL bound to `127.0.0.1`
 
 The server validates the callback URL before storing the approval record. It
-must reject any callback URL whose parsed host is not loopback
-(`127.0.0.1`, `[::1]`, or `localhost`) or whose scheme is not `http`.
+must reject any callback URL whose parsed host is not exactly `127.0.0.1` or
+whose scheme is not `http`.
 
-It returns an approval URL that the CLI opens in the browser.
+It returns an approval id and an approval URL that the CLI opens in the browser.
+The approval URL is an owner browser route containing the non-secret approval id
+and nonce, for example:
+
+```text
+<origin>/enroll/approve?approval=<approval-id>&nonce=<nonce>
+```
+
+`approval/start` is unauthenticated because a fresh CLI has no owner session.
+It must be abuse-bounded with short TTL records, per-callback/per-IP rate
+limits, and no secret material in the response.
 
 `approval/approve` is a CSRF-protected owner-session action. It creates a
 short-lived approval record bound to the client nonce and verifier challenge.
 It does not put pair code, pair token, or machine token in the browser URL.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives the
-approval id, nonce, and verifier. If the owner approved the request, the server
-creates or returns one opaque pair code from the same `pairing_codes` storage
-used by `/api/pair/init`. The CLI then calls the existing `/api/pair/claim`
-with that code and machine metadata. After claim succeeds, the approval record
-stores the claimed `machineId` so owner-session browser UI can watch the right
-machine.
+approval id, nonce, and verifier. It does not require owner session. Before the
+owner approves, it returns `pending`; after cancellation or expiry it returns
+`cancelled` or `expired`; after approval it creates or returns one opaque pair
+code from the same `pairing_codes` storage used by `/api/pair/init`. The CLI
+then calls the existing `/api/pair/claim` with that code and machine metadata.
+After pair claim succeeds, the approval record stores the claimed `machineId`
+so owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 approval page and onboarding wizard. It receives approval id and returns one of:
@@ -175,6 +187,7 @@ Guardrails:
 - Owner browser session is required to approve.
 - Pair code is single-use and short-lived.
 - Approval status never returns pair code, pair token, or machine token.
+- Approval start is unauthenticated but rate-limited and TTL-bounded.
 - Pair code and machine token are never written to server logs.
 - Browser code must not receive or store pair code or machine token in
   localStorage.
@@ -207,6 +220,12 @@ Required contract edits:
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
   nonce/verifier binding, and loopback callback wake-up semantics.
+- State that `approval/start` is unauthenticated but rate-limited and
+  TTL-bounded.
+- State that `approval/claim` is the CLI polling/exchange route and does not
+  require owner session.
+- State that `approval/status` is owner-session-only and exists for approval
+  page/onboarding status, not for CLI polling.
 - Remove the old claim that `approval/approve` delivers a pair token through
   the local callback or `neul://...&pair=<token>`.
 - State that browser approval never receives pair code, pair token, or machine
@@ -252,8 +271,9 @@ Rules:
 
 - The primary command must not include `--pair`.
 - The fallback/debug block must be visually and semantically secondary.
-- The approval page or onboarding wizard tracks the approval id returned by
-  `approval/start` and polls `GET /api/pair/approval/status`.
+- The approval page or onboarding wizard reads the approval id from the
+  approval URL opened by `neul login` and polls
+  `GET /api/pair/approval/status`.
 - The 120 second heartbeat window starts when approval status first returns
   `claimed` with `machineId`.
 - Connected state is shown only after the first heartbeat makes the machine
@@ -324,7 +344,11 @@ Go tests:
   session is missing, or config already exists.
 - approval start/approve/claim binds nonce and verifier to callback and requires
   owner session for approval.
-- approval start rejects non-loopback callback URLs.
+- approval start is unauthenticated but rate-limited and TTL-bounded.
+- approval start rejects callback URLs that are not `http://127.0.0.1:<port>/...`.
+- approval claim is machine-client polling/exchange and does not require owner
+  session.
+- approval status requires owner session and is not used by CLI polling.
 - approval status returns claimed `machineId` and `claimedAt`, but never returns
   pair code, pair token, or machine token.
 - callback rejects mismatched nonce.
