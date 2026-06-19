@@ -33,7 +33,7 @@ Included:
   to `neul login --server <origin>`
 - local callback based browser approval
 - pair claim and local config write with `0600` permissions
-- first heartbeat gated "joined fleet" success
+- `login` enrollment success separated from `up` connected/running success
 - web onboarding copy updated to `neul login` primary path
 - fallback/debug command retained as explicit secondary path
 - tests that prove token handoff guardrails
@@ -102,15 +102,18 @@ Flow:
    API.
 8. Claim the pair code with machine metadata through `/api/pair/claim`.
 9. Write local config with `0600` permissions.
-10. Run one machine-token heartbeat tick.
-11. Report success as fleet membership only after the server accepts that
-   heartbeat. A local status file alone is not enough to claim fleet membership.
+10. Report enrollment success and point to `neul up`.
+
+`neul login` does not claim durable connected state. It creates local machine
+credentials and binds the machine to the owner workspace. `neul up` is
+responsible for starting or verifying the long-running agent and producing the
+heartbeat that makes the dashboard connected.
 
 Primary success copy should read like:
 
 ```text
-이 machine이 Neul fleet에 합류했습니다.
-다음 실행: neul up
+로그인이 완료되었습니다.
+이 machine을 계속 연결하려면 실행: neul up
 ```
 
 Failure copy should stay product-level and recoverable:
@@ -130,6 +133,8 @@ Target endpoints:
 
 - `POST /api/pair/approval/start`
 - `POST /api/pair/approval/approve`
+- `POST /api/pair/approval/claim`
+- `GET /api/pair/approval/status`
 
 `approval/start` receives:
 
@@ -152,7 +157,14 @@ It does not put pair code, pair token, or machine token in the browser URL.
 approval id, nonce, and verifier. If the owner approved the request, the server
 creates or returns one opaque pair code from the same `pairing_codes` storage
 used by `/api/pair/init`. The CLI then calls the existing `/api/pair/claim`
-with that code and machine metadata.
+with that code and machine metadata. After claim succeeds, the approval record
+stores the claimed `machineId` so owner-session browser UI can watch the right
+machine.
+
+`GET /api/pair/approval/status` is an owner-session status endpoint for the
+approval page and onboarding wizard. It receives approval id and returns one of:
+`pending`, `approved`, `claimed`, `expired`, `cancelled`, or `error`. The
+`claimed` response includes `machineId` and `claimedAt`.
 
 The implementation should reuse the existing pair claim machinery instead of
 creating a second machine registration system. Existing `/api/pair/claim`
@@ -162,6 +174,7 @@ Guardrails:
 
 - Owner browser session is required to approve.
 - Pair code is single-use and short-lived.
+- Approval status never returns pair code, pair token, or machine token.
 - Pair code and machine token are never written to server logs.
 - Browser code must not receive or store pair code or machine token in
   localStorage.
@@ -185,11 +198,15 @@ web onboarding tests must be updated in the same implementation change.
 
 Required contract edits:
 
+- Update Auth Defaults so pair tokens are no longer allowed in browser code,
+  local callback payloads, `neul://...&pair=<token>`, or fallback/debug browser
+  copy. The only browser-visible approval values are approval id, nonce, and
+  non-secret status.
 - Replace the planned primary packaged-client command
   `neul enroll --server <origin>` with `neul login --server <origin>`.
 - Rewrite the approval API subsection so it includes
-  `POST /api/pair/approval/claim`, nonce/verifier binding, and loopback callback
-  wake-up semantics.
+  `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
+  nonce/verifier binding, and loopback callback wake-up semantics.
 - Remove the old claim that `approval/approve` delivers a pair token through
   the local callback or `neul://...&pair=<token>`.
 - State that browser approval never receives pair code, pair token, or machine
@@ -235,6 +252,10 @@ Rules:
 
 - The primary command must not include `--pair`.
 - The fallback/debug block must be visually and semantically secondary.
+- The approval page or onboarding wizard tracks the approval id returned by
+  `approval/start` and polls `GET /api/pair/approval/status`.
+- The 120 second heartbeat window starts when approval status first returns
+  `claimed` with `machineId`.
 - Connected state is shown only after the first heartbeat makes the machine
   visible in `GET /api/dashboard`.
 - If heartbeat does not appear within 120 seconds, web shows
@@ -261,8 +282,8 @@ neul login --server <origin>
   -> CLI exchanges approval for pair code
   -> CLI claims pair code
   -> config saved 0600
-  -> server accepts first machine-token heartbeat
-  -> joined fleet copy
+  -> login/enrollment complete copy
+  -> points user to neul up
 ```
 
 Already joined:
@@ -273,6 +294,7 @@ neul up
   -> local status and LaunchAgent state checked
   -> optional machine-token heartbeat tick checks server/auth
   -> macOS user-level agent installed/kickstarted or verified
+  -> first server-accepted heartbeat makes dashboard connected
   -> local fleet status summary printed
 ```
 
@@ -294,13 +316,17 @@ Go tests:
 - `neul up` with existing config does not call pair claim and does not overwrite
   config.
 - `neul login --server <origin>` starts approval, receives callback, claims
-  pair code, writes config mode `0600`, and reports fleet membership only after
-  server-accepted heartbeat success.
+  pair code, writes config mode `0600`, and reports enrollment success without
+  claiming durable connected state.
+- `neul up` with existing config starts/verifies the agent and reports connected
+  only after a server-accepted heartbeat.
 - `neul login` fails clearly when callback bind fails, approval expires, owner
   session is missing, or config already exists.
 - approval start/approve/claim binds nonce and verifier to callback and requires
   owner session for approval.
 - approval start rejects non-loopback callback URLs.
+- approval status returns claimed `machineId` and `claimedAt`, but never returns
+  pair code, pair token, or machine token.
 - callback rejects mismatched nonce.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
@@ -313,6 +339,8 @@ Web tests:
 - onboarding primary command is `neul login --server <origin>`.
 - onboarding primary command does not include `--pair`.
 - fallback/debug command includes `--pair` only in the secondary block.
+- onboarding approval polling identifies the claimed machine by `machineId`.
+- onboarding 120 second timeout starts at approval `claimedAt`.
 - claimed machine moves to connected only after dashboard heartbeat evidence.
 - `agent_not_responding` appears after the 120 second timeout.
 
@@ -323,9 +351,10 @@ Manual QA:
 3. Open the dashboard onboarding wizard.
 4. Run the primary `neul login --server <origin>` command.
 5. Approve in the browser.
-6. Run `neul up`.
-7. Confirm dashboard shows the machine connected only after heartbeat.
-8. Confirm primary CLI/web output does not expose setup, pair, or machine token.
+6. Confirm login reports enrollment complete and points to `neul up`.
+7. Run `neul up`.
+8. Confirm dashboard shows the machine connected only after heartbeat.
+9. Confirm primary CLI/web output does not expose setup, pair, or machine token.
 
 ## Open Questions Deferred
 
