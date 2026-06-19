@@ -187,7 +187,7 @@ browser:
   "approvalUrl": "https://neul.example/enroll/approve?approval=approval_01HX...&nonce=nonce_base64url_32_bytes",
   "comparisonCode": "742-918",
   "expiresAt": "2026-06-19T08:10:00Z",
-  "pollAfterMs": 1000
+  "pollAfterMs": 2000
 }
 ```
 
@@ -208,7 +208,8 @@ but it is client supplied and not trusted as the binding.
 `approval/start` is unauthenticated because a fresh CLI has no owner session.
 It must be abuse-bounded with short TTL records, per-IP rate
 limits, and no secret material in the response. Approval records expire exactly
-10 minutes after `approval/start`, matching the existing pairing TTL.
+10 minutes after `approval/start` while they are pending or approved but
+unclaimed, matching the existing pairing TTL.
 Concrete limits for MVP: max 10 approval starts per minute per source IP, max
 30 approval starts per hour per source IP, and HTTP 429
 `approval_start_rate_limited` after either threshold.
@@ -266,7 +267,7 @@ Before the owner approves, it returns HTTP 200:
 {
   "status": "pending",
   "approvalExpiresAt": "2026-06-19T08:10:00Z",
-  "retryAfterMs": 1000
+  "retryAfterMs": 2000
 }
 ```
 
@@ -316,6 +317,12 @@ returns HTTP 200:
 }
 ```
 
+After `/api/pair/claim` consumes the pair code, the approval record remains
+queryable as `claimed` for 24 hours from `claimedAt` so the owner browser can
+show the "run `neul up`" waiting state. Approval TTL gates pending/approved
+credential release only; it does not turn an already claimed record back into
+`expired`.
+
 The metadata binding is enforced in `/api/pair/claim`: approval-created pair
 codes carry expected hostname/name, OS, architecture, and agent version metadata
 in server-side storage. This requires a schema change that can distinguish
@@ -330,7 +337,7 @@ watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 CLI-opened approval page. It receives approval id and returns one of:
-`pending`, `approved`, `claimed`, `expired`, `cancelled`, or `error`. The
+`pending`, `approved`, `claimed`, `expired`, or `cancelled`. The
 `pending` and `approved` responses include the machine preview metadata and a
 per-approval CSRF token for the approve action. The `claimed` response includes
 `machineId` and `claimedAt`. This endpoint never returns pair code, pair token,
@@ -393,11 +400,11 @@ Approval persistence:
 
 - Add a migration for a new approval-record table before implementing these
   endpoints.
-- Minimal fields: approval id, nonce hash, verifier challenge, CSRF token hash,
-  comparison code hash, state, machine preview metadata, createdAt, expiresAt,
-  approvedAt, cancelledAt, pairCodeIssuedAt, approvalPairingId,
-  claimedAt, claimedMachineId, claim failure count, and last failure metadata
-  needed for rate limiting.
+- Minimal fields: approval id, nonce hash, verifier challenge, plaintext CSRF
+  token, plaintext comparison code, state, machine preview metadata, createdAt,
+  expiresAt, approvedAt, cancelledAt, pairCodeIssuedAt, approvalPairingId,
+  claimedAt, claimedMachineId, claimedRetainUntil, claim failure count, and
+  last failure metadata needed for rate limiting.
 - The table stores no pair code, machine token, setup token, or plaintext
   verifier.
 - `approval/claim` creates the one-time pair code only after the approval record
@@ -419,8 +426,12 @@ Guardrails:
 - Approval claim rejects absent, malformed, or challenge-mismatched verifier.
 - Approval claim is rate-limited and attempt-bounded because it releases the
   one-time pair code.
-- Approval claim allows max 60 pending polls per minute per approval id, max 60
-  pending polls per minute per source IP, and max 5 verifier failures per
+- Approval approve allows max 20 POST attempts per minute per owner session and
+  max 60 POST attempts per hour per owner session.
+- Approval status allows max 120 GET requests per minute per owner session and
+  max 240 GET requests per minute per source IP.
+- Approval claim allows max 90 pending polls per minute per approval id, max
+  120 pending polls per minute per source IP, and max 5 verifier failures per
   approval id. The 6th verifier failure locks the approval with HTTP 423
   `approval_locked`; locked approvals never release pair code and must be
   restarted with `neul login`.
@@ -710,16 +721,20 @@ Go tests:
   owner session for approval.
 - approval start is unauthenticated but rate-limited at 10/minute/IP and
   30/hour/IP, TTL-bounded, and returns a browser/terminal comparison code.
-- approval records persist nonce hash, verifier challenge, CSRF token hash,
-  comparison code hash, state, machine preview metadata, expiry,
-  pairCodeIssuedAt, approvalPairingId, claim failure count, and claimed machine
-  id without storing pair code, machine token, setup token, or plaintext
-  verifier.
+- approval records persist nonce hash, verifier challenge, plaintext CSRF
+  token, plaintext comparison code, state, machine preview metadata, expiry,
+  pairCodeIssuedAt, approvalPairingId, claimedRetainUntil, claim failure count,
+  and claimed machine id without storing pair code, machine token, setup token,
+  or plaintext verifier.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
-- approval claim rate-limits pending polls at 60/minute per approval id and
-  60/minute per source IP.
+- approval approve rate-limits owner-session POST attempts at 20/minute and
+  60/hour.
+- approval status rate-limits owner-session GET requests at 120/minute and
+  source-IP GET requests at 240/minute.
+- approval claim rate-limits pending polls at 90/minute per approval id and
+  120/minute per source IP.
 - approval claim locks the approval with `approval_locked` on the 6th verifier
   failure and never releases a pair code after lock.
 - approval claim returns `approval_pair_code_issued` after the one-time pair
@@ -730,6 +745,8 @@ Go tests:
   rate-limited states.
 - approval-created pair codes expire 10 minutes after pair-code creation, not
   10 minutes after approval start.
+- claimed approval records continue returning `claimed` status until
+  `claimedRetainUntil`, independent of the original approval expiry.
 - verifier generation uses at least 32 bytes of randomness.
 - `/api/pair/claim` rejects mismatched machine metadata for approval-created
   pair codes before creating machine credentials.
