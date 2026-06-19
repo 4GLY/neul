@@ -368,6 +368,11 @@ func handleApprovalClaim(db *sql.DB, clock func() time.Time, limits *approvalRat
 			writeJSONError(w, http.StatusBadRequest, "approval_claim_invalid", "Approval id, nonce, and verifier are required.")
 			return
 		}
+		ip := requestIP(r)
+		if !limits.allowApprovalClaimIP(ip, now) {
+			writeJSONError(w, http.StatusTooManyRequests, "approval_claim_rate_limited", "Approval claim rate limit exceeded.")
+			return
+		}
 		tx, err := db.BeginTx(r.Context(), nil)
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "transaction_failed", "Could not claim approval.")
@@ -385,7 +390,7 @@ func handleApprovalClaim(db *sql.DB, clock func() time.Time, limits *approvalRat
 			writeJSONError(w, http.StatusInternalServerError, "approval_lookup_failed", "Could not look up approval.")
 			return
 		}
-		if !limits.allowApprovalClaim(record.ID, requestIP(r), now) {
+		if !limits.allowApprovalClaimID(record.ID, now) {
 			writeJSONError(w, http.StatusTooManyRequests, "approval_claim_rate_limited", "Approval claim rate limit exceeded.")
 			return
 		}

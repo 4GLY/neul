@@ -501,6 +501,40 @@ func TestApprovalClaim_whenPendingPollRateLimitExceeded_returnsApprovalClaimRate
 	}
 }
 
+func TestApprovalClaim_whenUnknownApprovalIDRateLimitExceeded_returnsApprovalClaimRateLimited(t *testing.T) {
+	db := openServerTestDB(t)
+	router := NewRouter(Config{DB: db, Clock: func() time.Time {
+		return time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC)
+	}})
+	_, verifier, _ := approvalClientProofForTest()
+	var recorder *httptest.ResponseRecorder
+
+	for range 121 {
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/api/pair/approval/claim",
+			strings.NewReader(`{"approvalId":"approval_unknown","nonce":"nonce_unknown","verifier":"`+verifier+`"}`),
+		)
+		request.RemoteAddr = "203.0.113.77:4321"
+		recorder = httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+	}
+
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusTooManyRequests, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "approval_claim_rate_limited") {
+		t.Fatalf("body = %s, want approval_claim_rate_limited", recorder.Body.String())
+	}
+	var approvalCount int
+	if err := db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM approval_records`).Scan(&approvalCount); err != nil {
+		t.Fatalf("query approval records error = %v", err)
+	}
+	if approvalCount != 0 {
+		t.Fatalf("approval record count = %d, want 0", approvalCount)
+	}
+}
+
 func TestApprovalStatus_whenLocked_returnsTerminalLockedState(t *testing.T) {
 	db := openServerTestDB(t)
 	router, cookie := authenticatedRouter(t, db, time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC))

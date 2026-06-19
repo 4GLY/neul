@@ -57,11 +57,16 @@ func (l *approvalRateLimiters) allowApprovalStatus(session string, ip string, no
 		allowApprovalRate(l.statusIPMin, ip, now, 240, time.Minute)
 }
 
-func (l *approvalRateLimiters) allowApprovalClaim(approvalID string, ip string, now time.Time) bool {
+func (l *approvalRateLimiters) allowApprovalClaimIP(ip string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	return allowApprovalRate(l.claimMin, approvalID, now, 90, time.Minute) &&
-		allowApprovalRate(l.claimIPMin, ip, now, 120, time.Minute)
+	return allowApprovalRate(l.claimIPMin, ip, now, 120, time.Minute)
+}
+
+func (l *approvalRateLimiters) allowApprovalClaimID(approvalID string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return allowApprovalRate(l.claimMin, approvalID, now, 90, time.Minute)
 }
 
 func allowApprovalRate(windows map[string]approvalRateWindow, key string, now time.Time, maxCount int, window time.Duration) bool {
