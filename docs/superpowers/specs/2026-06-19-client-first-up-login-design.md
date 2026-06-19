@@ -141,8 +141,12 @@ Failure copy should stay product-level and recoverable:
 - browser approval expired
 - browser approval was cancelled
 - server is unreachable
-- owner session is required
 - machine already has config
+
+`owner session is required` is browser-page copy, not a CLI terminal outcome.
+The CLI cannot observe browser session state through `approval/claim`; it only
+continues polling until the approval succeeds, is cancelled, expires, or the
+server polling path fails.
 
 ## Server And Browser Handoff
 
@@ -218,7 +222,10 @@ credential. After pair claim succeeds, the approval record stores the claimed
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 CLI-opened approval page. It receives approval id and returns one of:
 `pending`, `approved`, `claimed`, `expired`, `cancelled`, or `error`. The
-`claimed` response includes `machineId` and `claimedAt`.
+`pending` and `approved` responses include the machine preview metadata and a
+per-approval CSRF token for the approve action. The `claimed` response includes
+`machineId` and `claimedAt`. This endpoint never returns pair code, pair token,
+machine token, setup token, or plaintext verifier.
 
 Approval persistence:
 
@@ -343,12 +350,23 @@ Required contract edits:
 - Add positive `scripts/validate-packaged-client-docs.sh` assertions for
   `neul login --server <origin>`, `browser-safe approval handoffs`, and
   `browserSafeApprovalHandoffs`.
-- Update `web/src/copy.ts` so `browserSafeApprovalHandoffs` says browser
-  approval receives only approval id, nonce, and non-secret status; pair code,
-  pair token, and machine token stay on CLI/server paths.
-- Update `web/src/copy.ts` `commandTemplate` from `neul enroll --server
-  <origin>` to `neul login --server <origin>`, and update the matching
-  `scripts/validate-packaged-client-docs.sh` required-string check.
+- Update `web/src/copy.ts` and `web/src/copy.test.ts` together so the security
+  copy shape is fully renamed from pair-token wording to pair-code and
+  approval-handoff wording:
+  - `pairTokenKind` becomes `pairCodeKind` and describes the one-time
+    `/api/pair/claim` value.
+  - `neverStorePairTokenIn` becomes `neverStorePairCodeIn`.
+  - `allowedPairTokenHandoffs` becomes `browserSafeApprovalHandoffs` and says
+    browser approval receives only approval id, nonce, non-secret machine
+    preview metadata, non-secret status, and the per-approval CSRF token; pair
+    code, pair token, and machine token stay on CLI/server paths.
+  - `commandTemplate` changes from `neul enroll --server <origin>` to
+    `neul login --server <origin>`.
+  - fallback/debug copy changes from `--pair <token>` to
+    `--pair <pair-code>`.
+  - the matching tests assert the renamed security object, the login command
+    template, the pair-code fallback wording, and the absence of legacy
+    pair-token browser-handoff copy.
 - Update the fallback/debug required string in
   `scripts/validate-packaged-client-docs.sh` and `web/src/copy.ts` from
   `--pair <token>` to `--pair <pair-code>`.
@@ -489,7 +507,7 @@ Go tests:
   -> `rate_limited`.
 - `neul up` does not accept a connect-once/diagnostic status receipt as durable
   connected.
-- `neul login` fails clearly when approval expires, owner session is missing,
+- `neul login` fails clearly when approval expires, approval is cancelled,
   server polling fails, or config already exists.
 - approval start/approve/claim binds nonce and verifier to approval and requires
   owner session for approval.
@@ -510,8 +528,10 @@ Go tests:
 - ordinary `/api/pair/init` fallback/debug pair codes still accept existing
   machine metadata behavior.
 - approval status requires owner session and is not used by CLI polling.
-- approval status returns claimed `machineId` and `claimedAt`, but never returns
-  pair code, pair token, or machine token.
+- approval status returns machine preview metadata and a CSRF token for pending
+  or approved owner-page UI, returns claimed `machineId` and `claimedAt`, and
+  never returns pair code, pair token, machine token, setup token, or plaintext
+  verifier.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
 - `neul up` reuses existing LaunchAgent install/probe helpers but reads the raw
