@@ -113,19 +113,21 @@ behavior belongs to an explicit later recovery surface.
 Flow:
 
 1. Validate `--server`.
-2. Generate a client nonce and a verifier with at least 32 bytes of randomness.
-3. Request a browser approval URL from the server.
-4. Print the approval URL and try to open it in the owner browser.
+2. Check whether local config already exists. If it exists, fail before
+   creating a server-side approval record or opening the browser.
+3. Generate a client nonce and a verifier with at least 32 bytes of randomness.
+4. Request a browser approval URL from the server.
+5. Print the approval URL and try to open it in the owner browser.
    If the local browser has no owner session, the page tells the user to open
    the same URL in an already-authenticated owner browser or first create an
    owner session on this browser.
-5. Poll `POST /api/pair/approval/claim` until the
+6. Poll `POST /api/pair/approval/claim` until the
    owner approves, cancels, or the approval expires.
-6. Exchange the approval nonce/verifier for an opaque pair code over the server
+7. Exchange the approval nonce/verifier for an opaque pair code over the server
    API.
-7. Claim the pair code with machine metadata through `/api/pair/claim`.
-8. Write local config with `0600` permissions.
-9. Report enrollment success and point to `neul up`.
+8. Claim the pair code with machine metadata through `/api/pair/claim`.
+9. Write local config with `0600` permissions.
+10. Report enrollment success and point to `neul up`.
 
 `neul login` does not claim durable connected state. It creates local machine
 credentials and binds the machine to the owner workspace. `neul up` is
@@ -204,9 +206,12 @@ and nonce, for example:
 The CLI prints the `comparisonCode` next to the opened approval URL. The browser
 approval page displays the same code after loading `approval/status`, and its
 approve button copy tells the owner to approve only when the browser code
-matches the terminal code. This is the out-of-band binding for unauthenticated
-client-started approval URLs; owner-visible machine metadata is helpful context,
-but it is client supplied and not trusted as the binding.
+matches the terminal code. This is a phishing-resistance guardrail for owners
+who personally initiated `neul login`, not a cryptographic binding of initiator
+identity. MVP residual risk: if an owner approves a URL and comparison code sent
+by someone else, that other initiator can enroll their machine. The approval
+page copy must state this directly. Owner-visible machine metadata is helpful
+context, but it is client supplied and not trusted as a security binding.
 
 `approval/start` is unauthenticated because a fresh CLI has no owner session.
 It must be abuse-bounded with short TTL records, per-IP rate
@@ -304,8 +309,12 @@ verifier challenge stored by `approval/start`. The CLI then calls the existing
 `/api/pair/claim` with that `pairCode` and machine metadata. Metadata matching
 is enforced by `/api/pair/claim`, not by `approval/claim`. `approval/claim`
 must be abuse-bounded: rate-limit by approval id and source IP, lock or expire
-the approval after repeated verifier failures, and never reveal whether the
-nonce or verifier was the wrong component.
+the approval after repeated claim-auth failures, and never reveal whether the
+nonce or verifier was the wrong component. An unknown approval id returns
+HTTP 404 `approval_not_found` and does not increment counters. For a known
+approval id, nonce mismatch, malformed verifier, and verifier mismatch all
+return HTTP 403 `approval_claim_denied` and increment the same
+`claimFailureCount`; the 6th such failure locks the approval.
 
 `approval/claim` is intentionally single-issue. Under a transaction, exactly
 one poll may create and receive the pair code. The approval record stores
@@ -407,8 +416,10 @@ terminal states because it is the machine credential-release exchange path.
 
 Approval persistence:
 
-- Add a migration for a new approval-record table before implementing these
-  endpoints.
+- Add an idempotent migration for a new approval-record table before
+  implementing these endpoints. Because the current migration runner re-runs
+  every SQL file on each boot, this migration must use `CREATE TABLE IF NOT
+  EXISTS` and `CREATE INDEX IF NOT EXISTS`.
 - Minimal fields: approval id, nonce hash, verifier challenge, plaintext CSRF
   token, plaintext comparison code, state, machine preview metadata, createdAt,
   expiresAt, approvedAt, cancelledAt, pairCodeIssuedAt, approvalPairingId,
@@ -441,8 +452,8 @@ Guardrails:
 - Approval status allows max 120 GET requests per minute per owner session and
   max 240 GET requests per minute per source IP.
 - Approval claim allows max 90 pending polls per minute per approval id, max
-  120 pending polls per minute per source IP, and max 5 verifier failures per
-  approval id. The 6th verifier failure locks the approval with HTTP 423
+  120 pending polls per minute per source IP, and max 5 claim-auth failures per
+  approval id. The 6th claim-auth failure locks the approval with HTTP 423
   `approval_locked`; locked approvals never release pair code and must be
   restarted with `neul login`.
 - Approval page shows requesting machine context before the owner approves.
@@ -493,8 +504,10 @@ Required contract edits:
 - Remove or rewrite device-code fallback copy for this slice. Device code is
   out of scope and must not be described as a fallback for removed callback or
   `neul://` handoffs.
-- Add a migration for approval records. Do not add columns to `pairing_codes`
-  unless the migration runner first gains idempotent applied-version tracking.
+- Add an idempotent migration for approval records using `CREATE TABLE IF NOT
+  EXISTS` and `CREATE INDEX IF NOT EXISTS`. Do not add columns to
+  `pairing_codes` unless the migration runner first gains idempotent
+  applied-version tracking.
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
   nonce/verifier binding, and polling semantics.
@@ -721,6 +734,8 @@ Go tests:
 - `neul login --server <origin>` starts approval, polls approval claim, claims
   pair code, writes config mode `0600`, and reports enrollment success without
   claiming durable connected state.
+- `neul login --server <origin>` with existing local config fails before
+  calling `approval/start` or opening the browser.
 - `neul up` with existing config starts/verifies the agent and reports connected
   only after status provenance is long-running agent, `lastHeartbeatAt >=
   upStartedAt`, and `lastError` is empty or `null`.
@@ -744,13 +759,16 @@ Go tests:
 - approval page copy warns not to approve URLs the owner did not personally
   initiate with `neul login`, and requires matching the browser comparison code
   against the terminal code.
+- approval docs and copy describe comparison code as a phishing-resistance
+  guardrail with residual risk, not a cryptographic initiator binding.
 - approval records persist nonce hash, verifier challenge, plaintext CSRF
   token, plaintext comparison code, state, machine preview metadata, expiry,
   pairCodeIssuedAt, approvalPairingId, claimedRetainUntil, claim failure count,
   and claimed machine id without storing pair code, machine token, setup token,
   or plaintext verifier.
-- approval migration does not add columns to `pairing_codes`; `/api/pair/claim`
-  enforces approval-created expected metadata by joining
+- approval migration uses `CREATE TABLE IF NOT EXISTS` and
+  `CREATE INDEX IF NOT EXISTS`, does not add columns to `pairing_codes`, and
+  `/api/pair/claim` enforces approval-created expected metadata by joining
   `approval_records.approvalPairingId` to the existing pairing row id.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
@@ -761,8 +779,13 @@ Go tests:
   source-IP GET requests at 240/minute.
 - approval claim rate-limits pending polls at 90/minute per approval id and
   120/minute per source IP.
-- approval claim locks the approval with `approval_locked` on the 6th verifier
-  failure and never releases a pair code after lock.
+- approval claim returns `approval_not_found` without incrementing counters for
+  unknown approval ids.
+- approval claim returns `approval_claim_denied` and increments
+  `claimFailureCount` for known approval ids with nonce mismatch, malformed
+  verifier, or verifier mismatch.
+- approval claim locks the approval with `approval_locked` on the 6th
+  claim-auth failure and never releases a pair code after lock.
 - approval claim returns `approval_pair_code_issued` after the one-time pair
   code has already been issued but before `/api/pair/claim` consumes it, and
   returns `claimed` after `/api/pair/claim` consumes it.
