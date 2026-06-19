@@ -11,16 +11,13 @@ const approvalRecordInsertSQL = `INSERT INTO approval_records (id, nonce_hash, v
 const approvalRecordSelectSQL = `SELECT id, nonce_hash, verifier_challenge, csrf_token, comparison_code, state, machine_name, machine_os, machine_arch, machine_agent_version, approval_pairing_id, created_at, expires_at, approved_at, cancelled_at, pair_code_issued_at, claimed_at, claimed_machine_id, claimed_retain_until, claim_failure_count, last_failure_at, last_failure_ip FROM approval_records`
 
 type approvalRecord struct {
-	ID, NonceHash, VerifierChallenge, CSRFToken string
-	ComparisonCode, State                       string
-	Machine                                     pairClaimMachine
-	CreatedAt, ExpiresAt                        string
-	ApprovedAt, CancelledAt                     sql.NullString
-	PairCodeIssuedAt, ApprovalPairingID         sql.NullString
-	ClaimedAt, ClaimedMachineID                 sql.NullString
-	ClaimedRetainUntil                          sql.NullString
-	ClaimFailureCount                           int
-	LastFailureAt, LastFailureIP                sql.NullString
+	ID, NonceHash, VerifierChallenge, CSRFToken, ComparisonCode, State string
+	Machine                                                            pairClaimMachine
+	CreatedAt, ExpiresAt                                               string
+	ApprovedAt, CancelledAt, PairCodeIssuedAt, ApprovalPairingID       sql.NullString
+	ClaimedAt, ClaimedMachineID, ClaimedRetainUntil                    sql.NullString
+	ClaimFailureCount                                                  int
+	LastFailureAt, LastFailureIP                                       sql.NullString
 }
 
 type approvalPairCodeIssuedUpdate struct {
@@ -80,7 +77,7 @@ func loadApprovalRecord(ctx context.Context, db *sql.DB, approvalID string) (app
 }
 
 func getApprovalRecordForUpdate(ctx context.Context, tx *sql.Tx, approvalID string) (approvalRecord, error) {
-	if err := lockApprovalRecord(ctx, tx, approvalID); err != nil {
+	if err := lockApprovalRecordForUpdate(ctx, tx, approvalID); err != nil {
 		return approvalRecord{}, err
 	}
 	return scanApprovalRecord(tx.QueryRowContext(ctx, approvalRecordSelectSQL+` WHERE id = ?`, approvalID))
@@ -162,15 +159,26 @@ func incrementApprovalClaimFailure(ctx context.Context, tx *sql.Tx, update appro
 }
 
 func lockApprovalRecord(ctx context.Context, tx *sql.Tx, approvalID string) error {
-	result, err := tx.ExecContext(ctx, `UPDATE approval_records SET id = id WHERE id = ?`, approvalID)
+	result, err := tx.ExecContext(ctx, `UPDATE approval_records SET state = ? WHERE id = ?`, "locked", approvalID)
 	if err != nil {
 		return fmt.Errorf("lock approval record: %w", err)
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
+	if rowsAffected, err := result.RowsAffected(); err != nil {
 		return fmt.Errorf("read locked approval rows affected: %w", err)
+	} else if rowsAffected == 0 {
+		return sql.ErrNoRows
 	}
-	if rowsAffected == 0 {
+	return nil
+}
+
+func lockApprovalRecordForUpdate(ctx context.Context, tx *sql.Tx, approvalID string) error {
+	result, err := tx.ExecContext(ctx, `UPDATE approval_records SET id = id WHERE id = ?`, approvalID)
+	if err != nil {
+		return fmt.Errorf("lock approval record for update: %w", err)
+	}
+	if rowsAffected, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("read approval record for update rows affected: %w", err)
+	} else if rowsAffected == 0 {
 		return sql.ErrNoRows
 	}
 	return nil
