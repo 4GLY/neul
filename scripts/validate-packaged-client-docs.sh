@@ -18,6 +18,15 @@ require_text() {
 	fi
 }
 
+require_absent() {
+	ra_file=$1
+	ra_text=$2
+	ra_label=$3
+	if grep -Fq -- "$ra_text" "$ra_file"; then
+		fail "$ra_label: stale '$ra_text' found in $ra_file"
+	fi
+}
+
 require_executable() {
 	re_file=$1
 	re_label=$2
@@ -106,6 +115,13 @@ security_model_guardrails() {
 	require_text "docs/mvp.md" "browser-safe approval handoffs" "MVP browser-safe approval handoffs"
 	require_text "internal/domain/contracts.md" "Self-hosted owner approval model" "contract owner approval model"
 	require_text "internal/domain/contracts.md" "approval claim is machine-client polling" "contract approval claim polling guardrail"
+	require_text "internal/domain/contracts.md" '`GET /api/pair/poll` is the source of truth only for fallback/debug pair-code expiry' "contract fallback pair poll expiry"
+	require_text "internal/domain/contracts.md" 'Approval expiry uses `GET /api/pair/approval/status`' "contract approval expiry source"
+	require_text "docs/mvp.md" 'durable `neul up` agent-start attempt' "MVP neul up heartbeat timeout anchor"
+	require_text "internal/domain/contracts.md" 'durable `neul up` agent-start attempt' "contract neul up heartbeat timeout anchor"
+	require_absent "docs/mvp.md" "claim 이후 120초" "MVP post-claim heartbeat timeout"
+	require_absent "internal/domain/contracts.md" "claimed machine does not heartbeat within 120 seconds" "contract post-claim heartbeat timeout"
+	require_absent "internal/domain/contracts.md" "Pair poll is the source of truth for onboarding expiry" "contract broad pair poll expiry"
 	require_text "internal/domain/contracts.md" "First-run states" "contract first-run states"
 	require_text "internal/domain/contracts.md" "Pairing browser approval API" "contract browser approval API"
 	require_text "internal/domain/contracts.md" "First-run state mapping" "contract state mapping"

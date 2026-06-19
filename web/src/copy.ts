@@ -55,9 +55,16 @@ export const onboardingCopy = {
 		"go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once",
 	security: {
 		pairCodeKind: "one-time /api/pair/claim value",
+		browserExcludedCredentials: [
+			"pair code",
+			"pair token",
+			"machine token",
+			"setup token",
+			"plaintext verifier",
+		],
 		neverStorePairCodeIn: [
 			"browser copy",
-			"general URL query strings",
+			"URLs",
 			"document.title",
 			"browser history",
 			"localStorage",

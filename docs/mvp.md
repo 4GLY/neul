@@ -54,7 +54,9 @@ MVP 플로우:
    다음 실행 명령으로 `neul up`을 안내한다.
 8. `neul up`은 user-level agent를 시작하거나 확인하고, long-running agent의
    fresh heartbeat가 보일 때만 connected 상태를 만든다.
-9. claim 이후 120초 안에 heartbeat가 보이지 않으면 웹은
+9. heartbeat 대기 timeout은 `/api/pair/claim` 또는 `neul login` 성공 시각이
+   아니라 durable `neul up` agent-start attempt 시각에서 시작한다. 그
+   attempt 이후 timeout 안에 fresh heartbeat가 보이지 않으면 웹은
    `agent_not_responding` 상태와 retry/help copy를 보여준다.
 
 First-run states: `not_logged_in`, `waiting_for_browser_approval`, `enrolled`,

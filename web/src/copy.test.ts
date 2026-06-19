@@ -55,9 +55,16 @@ describe("Korean-first copy", () => {
 		expect(copy.onboarding.security.pairCodeKind).toContain(
 			"/api/pair/claim",
 		);
+		expect(copy.onboarding.security.browserExcludedCredentials).toEqual([
+			"pair code",
+			"pair token",
+			"machine token",
+			"setup token",
+			"plaintext verifier",
+		]);
 		expect(copy.onboarding.security.neverStorePairCodeIn).toEqual([
 			"browser copy",
-			"general URL query strings",
+			"URLs",
 			"document.title",
 			"browser history",
 			"localStorage",

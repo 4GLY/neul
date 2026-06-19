@@ -40,8 +40,8 @@ conflicts with this file or `docs/mvp.md`, the MVP contract here wins.
 ## Timing And Version Defaults
 
 - Pairing codes expire exactly 10 minutes after creation.
-- Pair poll is the source of truth for onboarding expiry. Expired unused pair
-  codes return HTTP 200 with `status: "expired"` and `expiresAt`.
+- `GET /api/pair/poll` is the source of truth only for fallback/debug pair-code expiry. Expired unused pair codes return HTTP 200 with `status: "expired"` and `expiresAt`.
+- Approval expiry uses `GET /api/pair/approval/status`.
 - Expired pairing claims return `410 Gone` with error code
   `pairing_code_expired`.
 - Agent heartbeat interval is 30 seconds.
@@ -115,8 +115,9 @@ Primary packaged client onboarding flow:
 8. `neul up` starts or verifies the user-level agent. Web moves to `connected`
    only after a fresh long-running agent heartbeat makes the machine visible in
    `GET /api/dashboard`.
-9. If the claimed machine does not heartbeat within 120 seconds, web shows
-   `agent_not_responding`.
+9. Heartbeat timeout starts from a durable `neul up` agent-start attempt, not
+   from `/api/pair/claim` or `neul login` success. If that attempt does not
+   produce a fresh heartbeat within its timeout, web shows `agent_not_responding`.
 
 First-run states are `not_logged_in`, `waiting_for_browser_approval`,
 `enrolled`, `offline`, and `error`.
