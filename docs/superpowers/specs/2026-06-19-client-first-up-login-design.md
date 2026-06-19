@@ -93,8 +93,12 @@ Already joined behavior:
    upStartedAt`, and `lastError` is empty or `null`.
 6. Outcome precedence is deterministic. If LaunchAgent install/kickstart fails
    before a run loop is started, print `agent_not_running`. Otherwise, a fresh
-   status receipt with `lastError.kind` after `upStartedAt` wins over the bare
-   timeout and maps deterministically:
+   failed attempt is anchored by `lastHeartbeatAttempt >= upStartedAt`; a stale
+   `lastError` without a fresh attempt is ignored. `neul up` keeps polling until
+   either a fresh successful heartbeat appears or the 60 second deadline is
+   reached, so a later success can recover from an earlier transient error. At
+   the deadline, the latest fresh `lastError.kind` wins over the bare timeout
+   and maps deterministically:
    - `auth_failure` -> `auth_invalid`
    - `connection_failure` -> `server_unreachable`
    - `server_failure` -> `server_error`
@@ -355,7 +359,7 @@ owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 CLI-opened approval page. It receives approval id and returns one of:
-`pending`, `approved`, `claimed`, `expired`, or `cancelled`. The
+`pending`, `approved`, `claimed`, `expired`, `cancelled`, or `locked`. The
 `pending` and `approved` responses include the machine preview metadata and a
 per-approval CSRF token for the approve action. The `claimed` response includes
 `machineId` and `claimedAt`. This endpoint never returns pair code, pair token,
@@ -397,7 +401,7 @@ Approval endpoint HTTP contract:
 | `POST /api/pair/approval/start` | `201 Created` with `approvalId`, `approvalUrl`, `comparisonCode`, `expiresAt`, `pollAfterMs` | `400 bad_json`, `400 approval_start_invalid`, `429 approval_start_rate_limited`, `500 approval_start_failed` |
 | `POST /api/pair/approval/approve` | `200 OK` with `status: "approved" \| "cancelled"` and `expiresAt` | `400 bad_json`, `400 approval_approve_invalid`, `401 owner_session_required`, `403 approval_origin_invalid`, `403 approval_csrf_invalid`, `404 approval_not_found`, `409 approval_not_pending`, `410 approval_expired`, `429 approval_approve_rate_limited` |
 | `POST /api/pair/approval/claim` | `200 OK` with `status: "pending"`, `status: "approved"` plus `pairCode`, or `status: "claimed"` | `400 bad_json`, `400 approval_claim_invalid`, `403 approval_claim_denied`, `404 approval_not_found`, `409 approval_cancelled`, `409 approval_pair_code_issued`, `410 approval_expired`, `423 approval_locked`, `429 approval_claim_rate_limited` |
-| `GET /api/pair/approval/status` | `200 OK` with `pending`, `approved`, `claimed`, `expired`, or `cancelled` UI state | `401 owner_session_required`, `404 approval_not_found`, `429 approval_status_rate_limited` |
+| `GET /api/pair/approval/status` | `200 OK` with `pending`, `approved`, `claimed`, `expired`, `cancelled`, or `locked` UI state | `401 owner_session_required`, `404 approval_not_found`, `429 approval_status_rate_limited` |
 
 All non-2xx responses use the existing canonical JSON error envelope:
 
@@ -410,9 +414,11 @@ All non-2xx responses use the existing canonical JSON error envelope:
 }
 ```
 
-`approval/status` may return `expired` or `cancelled` as HTTP 200 because it is
-an owner-session UI status poll. `approval/claim` returns HTTP 409/410 for those
-terminal states because it is the machine credential-release exchange path.
+`approval/status` may return `expired`, `cancelled`, or `locked` as HTTP 200
+because it is an owner-session UI status poll. The owner page treats `locked` as
+a terminal state and tells the owner to restart `neul login`; it does not keep
+polling forever. `approval/claim` returns HTTP 409/410/423 for those terminal
+states because it is the machine credential-release exchange path.
 
 Approval persistence:
 
@@ -669,6 +675,8 @@ Rules:
 - If that page has no owner session, it shows copy telling the user to open the
   same URL in an already-authenticated owner browser or create/restore the owner
   session first.
+- If approval status becomes `locked`, the page stops polling and tells the
+  owner to restart `neul login`.
 - After that approval page first sees `claimed` with `machineId`, it shows a
   waiting state that tells the user to run `neul up`.
 - Connected state is shown only after the first heartbeat makes the machine
@@ -747,7 +755,10 @@ Go tests:
   -> `rate_limited`.
 - `neul up` reports mapped `lastError.kind` instead of
   `local_heartbeat_missing` when a fresh long-running status after `upStartedAt`
-  contains both no successful heartbeat and a structured `lastError.kind`.
+  has `lastHeartbeatAttempt >= upStartedAt`, contains no successful heartbeat,
+  and includes a structured `lastError.kind`.
+- `neul up` ignores stale `lastError.kind` when `lastHeartbeatAttempt` is empty
+  or older than `upStartedAt`.
 - `neul up` does not accept a connect-once/diagnostic status receipt as durable
   connected.
 - `neul login` fails clearly when approval expires, approval is cancelled,
@@ -786,6 +797,8 @@ Go tests:
   verifier, or verifier mismatch.
 - approval claim locks the approval with `approval_locked` on the 6th
   claim-auth failure and never releases a pair code after lock.
+- approval status returns `locked` as a terminal owner-page state after claim
+  lockout, and the approval page stops polling with restart copy.
 - approval claim returns `approval_pair_code_issued` after the one-time pair
   code has already been issued but before `/api/pair/claim` consumes it, and
   returns `claimed` after `/api/pair/claim` consumes it.
@@ -803,14 +816,16 @@ Go tests:
   machine metadata behavior.
 - approval status requires owner session and is not used by CLI polling.
 - approval status returns machine preview metadata and a CSRF token for pending
-  or approved owner-page UI, returns claimed `machineId` and `claimedAt`, and
-  never returns pair code, pair token, machine token, setup token, or plaintext
-  verifier.
+  or approved owner-page UI, returns claimed `machineId` and `claimedAt`,
+  returns terminal `expired`, `cancelled`, or `locked` states for owner-page
+  copy, and never returns pair code, pair token, machine token, setup token, or
+  plaintext verifier.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
 - `neul up` reuses existing LaunchAgent install/probe helpers but reads the raw
-  status file itself for structured `mode`, `lastHeartbeatAt`, and `lastError`
-  checks. It does not parse `agent status` text and does not use the current
+  status file itself for structured `mode`, `lastHeartbeatAt`,
+  `lastHeartbeatAttempt`, and `lastError` checks. It does not parse
+  `agent status` text and does not use the current
   unimplemented `agent start` stub unless that stub is completed in the same
   change.
 - status receipt provenance is written by both long-running and explicit
