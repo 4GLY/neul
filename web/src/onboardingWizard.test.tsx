@@ -94,37 +94,17 @@ describe("OnboardingWizard", () => {
 		expect(document.body.textContent).toContain("다시 만들기");
 	});
 
-	it("stops waiting after the claimed machine misses the heartbeat window", async () => {
+	it("keeps neul up guidance when a claimed invite has no browser heartbeat", async () => {
 		vi.useFakeTimers();
-		stubFetchSequence([
-			{ code: "pair_123", expiresAt: "2026-06-06T12:10:00Z" },
-			{
-				status: "claimed",
-				machineId: "machine_1",
-				expiresAt: "2026-06-06T12:10:00Z",
-			},
-			{
-				metrics: {
-					total: 0,
-					healthy: 0,
-					drifted: 0,
-					pending: 0,
-					offline: 0,
-					blocked: 0,
-					unknown: 0,
-				},
-				machines: [],
-				activity: [],
-				ledger: [],
-			},
-			{ resources: [] },
-		]);
+		stubClaimedInviteWithoutHeartbeat();
 
 		await renderWizard();
 		await advanceTimers(2000);
-		await advanceTimers(120_000);
+		await advanceTimers(60 * 2 * 1000);
 
-		expect(document.body.textContent).toContain("agent 응답 없음");
+		expect(document.body.textContent).toContain("agent 연결 확인 중");
+		expect(document.body.textContent).toContain("neul up");
+		expect(document.body.textContent).not.toContain("agent 응답 없음");
 	});
 
 	it("notifies the shell when invite creation loses owner session", async () => {
@@ -209,4 +189,57 @@ function stubFetchSequence(bodies: readonly unknown[]): {
 		},
 	);
 	return calls;
+}
+
+function stubClaimedInviteWithoutHeartbeat(): void {
+	vi.stubGlobal(
+		"fetch",
+		async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === "/api/pair/init" && init?.method === "POST") {
+				return jsonResponse({
+					code: "pair_123",
+					expiresAt: "2026-06-06T12:10:00Z",
+				});
+			}
+			if (url.startsWith("/api/pair/poll")) {
+				return jsonResponse({
+					status: "claimed",
+					machineId: "machine_1",
+					expiresAt: "2026-06-06T12:10:00Z",
+				});
+			}
+			if (url === "/api/dashboard") {
+				return jsonResponse(emptyDashboard());
+			}
+			if (url === "/api/resources") {
+				return jsonResponse({ resources: [] });
+			}
+			return new Response("not found", { status: 404 });
+		},
+	);
+}
+
+function emptyDashboard(): unknown {
+	return {
+		metrics: {
+			total: 0,
+			healthy: 0,
+			drifted: 0,
+			pending: 0,
+			offline: 0,
+			blocked: 0,
+			unknown: 0,
+		},
+		machines: [],
+		activity: [],
+		ledger: [],
+	};
+}
+
+function jsonResponse(body: unknown): Response {
+	return new Response(JSON.stringify(body), {
+		status: 200,
+		headers: { "Content-Type": "application/json" },
+	});
 }

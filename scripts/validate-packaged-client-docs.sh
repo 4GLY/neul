@@ -135,6 +135,12 @@ security_model_guardrails() {
 	require_absent "web/src/OnboardingWizard.tsx" "neul enroll --server" "web wizard stale enroll command"
 	require_absent "web/src/onboardingWizard.test.tsx" "neul enroll --server" "web wizard stale enroll assertion"
 	require_absent "web/e2e/mvp-flow.ts" "neul enroll --server" "E2E stale enroll assertion"
+	require_absent "web/src/OnboardingWizard.tsx" "heartbeatTimeoutMs" "web wizard claim-anchored heartbeat timeout"
+	require_absent "web/src/OnboardingWizard.tsx" "agent_not_responding" "web wizard claim-anchored no-response state"
+	require_absent "web/src/OnboardingWizard.tsx" "120_000" "web wizard claim-anchored timeout literal"
+	require_absent "web/src/onboardingWizard.test.tsx" "heartbeatTimeoutMs" "web wizard test claim-anchored heartbeat timeout"
+	require_absent "web/src/onboardingWizard.test.tsx" "agent_not_responding" "web wizard test claim-anchored no-response state"
+	require_absent "web/src/onboardingWizard.test.tsx" "120_000" "web wizard test claim-anchored timeout literal"
 	if grep -Fq "packaged-client command bridge" docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts; then
 		fail "packaged-client command bridge must not be a browser-safe approval handoff"
 	fi

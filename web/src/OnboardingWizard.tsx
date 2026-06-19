@@ -12,7 +12,6 @@ import { StatePanel } from "./StatePanel";
 
 const pairPollMs = 2000;
 const heartbeatPollMs = 2000;
-const heartbeatTimeoutMs = 120_000;
 
 type WizardState =
 	| { readonly kind: "creating" }
@@ -21,11 +20,9 @@ type WizardState =
 			readonly kind: "claimed_waiting_heartbeat";
 			readonly invite: ApiPairInitResponse;
 			readonly machineId: string;
-			readonly startedAtMs: number;
 	  }
 	| { readonly kind: "connected" }
 	| { readonly kind: "expired"; readonly expiresAt: string }
-	| { readonly kind: "agent_not_responding"; readonly machineId: string }
 	| { readonly kind: "error"; readonly message: string };
 
 export function OnboardingWizard({
@@ -75,7 +72,6 @@ export function OnboardingWizard({
 							kind: "claimed_waiting_heartbeat",
 							invite: state.invite,
 							machineId: result.machineId,
-							startedAtMs: Date.now(),
 						});
 						return;
 					}
@@ -107,13 +103,6 @@ export function OnboardingWizard({
 			return;
 		}
 		const intervalId = window.setInterval(() => {
-			if (Date.now() - state.startedAtMs >= heartbeatTimeoutMs) {
-				setState({
-					kind: "agent_not_responding",
-					machineId: state.machineId,
-				});
-				return;
-			}
 			void loadDashboardData()
 				.then((dashboard) => {
 					const connected = dashboard.machines.some(
@@ -193,7 +182,7 @@ export function OnboardingWizard({
 		return (
 			<StatePanel
 				title={copy.onboarding.checkingAgent}
-				body="등록은 완료되었습니다. 첫 heartbeat를 기다리는 중입니다."
+				body="등록은 승인되었습니다. 이 머신에서 neul up을 실행하거나 상태를 확인하세요. 연결 상태가 보이면 자동으로 전환합니다."
 			/>
 		);
 	}
@@ -212,19 +201,6 @@ export function OnboardingWizard({
 			<StatePanel
 				title={copy.onboarding.expired}
 				body={`만료 시간: ${state.expiresAt}`}
-				action={copy.onboarding.retry}
-				onAction={() => {
-					void createInvite();
-				}}
-			/>
-		);
-	}
-
-	if (state.kind === "agent_not_responding") {
-		return (
-			<StatePanel
-				title={copy.onboarding.agentNotResponding}
-				body={`machine ${state.machineId}의 heartbeat가 아직 보이지 않습니다.`}
 				action={copy.onboarding.retry}
 				onAction={() => {
 					void createInvite();
