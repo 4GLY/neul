@@ -55,6 +55,7 @@ Excluded:
 - VPN or mesh networking behavior
 - arbitrary shell execution
 - production macOS signing, notarization, or stapling
+- device-code fallback
 
 ## Product Shape
 
@@ -219,6 +220,22 @@ CLI-opened approval page. It receives approval id and returns one of:
 `pending`, `approved`, `claimed`, `expired`, `cancelled`, or `error`. The
 `claimed` response includes `machineId` and `claimedAt`.
 
+Approval persistence:
+
+- Add a migration for a new approval-record table before implementing these
+  endpoints.
+- Minimal fields: approval id, nonce hash, verifier challenge hash, CSRF token
+  hash, state, machine preview metadata, createdAt, expiresAt, approvedAt,
+  cancelledAt, claimedAt, claimedMachineId, claim failure count, and last
+  failure metadata needed for rate limiting.
+- The table stores no pair code, machine token, setup token, or plaintext
+  verifier.
+- `approval/claim` creates the one-time pair code only after the approval record
+  is approved and verifier validation passes.
+- Pairing rows created from approval records store an approval id/source kind
+  plus nullable expected metadata so `/api/pair/claim` can enforce metadata
+  binding. Ordinary `/api/pair/init` rows leave those fields empty.
+
 The implementation should reuse the existing pair claim machinery instead of
 creating a second machine registration system. Existing `/api/pair/claim`
 remains the credential creation point.
@@ -277,6 +294,10 @@ Required contract edits:
 - Rewrite Timing And Version Defaults so `GET /api/pair/poll` remains the
   source of truth only for fallback/debug pair-code expiry. Approval expiry uses
   `GET /api/pair/approval/status` and the same 10 minute TTL.
+- Remove or rewrite device-code fallback copy for this slice. Device code is
+  out of scope and must not be described as a fallback for removed callback or
+  `neul://` handoffs.
+- Add a migration for approval records and approval-created pairing metadata.
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
   nonce/verifier binding, and polling semantics.
@@ -311,6 +332,7 @@ Required contract edits:
   `neul://enroll?server=` or `neul://...&pair=<token>` required-string checks,
   no `local callback binds to 127.0.0.1 only` required-string check,
   no `docs/mvp.md` `local callback` required-string check,
+  no `Device code is fallback-only` required-string checks,
   and no `allowedPairTokenHandoffs` copy that says pair tokens are allowed in
   browser handoff surfaces.
 - Replace `allowed pair-token handoffs`, `Allowed pair-token handoffs`, and
@@ -338,6 +360,9 @@ Deep link decision:
 
 - This slice drops `neul://` deep-link handoff entirely.
 - This slice also drops browser-to-loopback local callback wake-up entirely.
+- This slice drops device-code fallback. A future device-code flow must be
+  designed as a separate fallback and must not rely on removed callback/deep-link
+  handoff copy.
 - A future pair-token-free deep link or callback wake-up may be designed later,
   but it is out of scope for this implementation plan.
 
@@ -469,6 +494,9 @@ Go tests:
 - approval start/approve/claim binds nonce and verifier to approval and requires
   owner session for approval.
 - approval start is unauthenticated but rate-limited and TTL-bounded.
+- approval records persist nonce/verifier challenge/CSRF hashes, state,
+  machine preview metadata, expiry, claim failure count, and claimed machine id
+  without storing pair code, machine token, setup token, or plaintext verifier.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
