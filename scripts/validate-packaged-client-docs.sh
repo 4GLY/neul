@@ -27,6 +27,22 @@ require_absent() {
 	fi
 }
 
+require_absent_stale_onboarding_terms() {
+	rasot_file=$1
+	require_absent "$rasot_file" "neul enroll --server" "stale primary enroll command"
+	require_absent "$rasot_file" "neul://enroll?server=" "stale enrollment deep-link URL"
+	require_absent "$rasot_file" "neul://enroll" "stale enrollment deep-link"
+	require_absent "$rasot_file" "enroll?server=" "stale enrollment deep-link query"
+	require_absent "$rasot_file" "local callback" "stale local callback handoff"
+	require_absent "$rasot_file" "callback URL" "stale callback handoff"
+	require_absent "$rasot_file" "callback port" "stale callback handoff"
+	require_absent "$rasot_file" "Device code is fallback-only" "stale device-code fallback decision"
+	require_absent "$rasot_file" "device code" "stale device-code fallback decision"
+	require_absent "$rasot_file" "deep link" "stale deep-link handoff"
+	require_absent "$rasot_file" "deep-link" "stale deep-link handoff"
+	require_absent "$rasot_file" "scheme handler" "stale deep-link scheme handler"
+}
+
 require_executable() {
 	re_file=$1
 	re_label=$2
@@ -141,6 +157,9 @@ security_model_guardrails() {
 	require_absent "web/src/onboardingWizard.test.tsx" "heartbeatTimeoutMs" "web wizard test claim-anchored heartbeat timeout"
 	require_absent "web/src/onboardingWizard.test.tsx" "agent_not_responding" "web wizard test claim-anchored no-response state"
 	require_absent "web/src/onboardingWizard.test.tsx" "120_000" "web wizard test claim-anchored timeout literal"
+	for onboarding_contract_file in docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts web/src/copy.test.ts; do
+		require_absent_stale_onboarding_terms "$onboarding_contract_file"
+	done
 	if grep -Fq "packaged-client command bridge" docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts; then
 		fail "packaged-client command bridge must not be a browser-safe approval handoff"
 	fi
