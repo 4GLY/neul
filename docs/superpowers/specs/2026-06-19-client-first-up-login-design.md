@@ -91,13 +91,16 @@ Already joined behavior:
    status file for up to 60 seconds, and treat connected as true only when the
    status receipt was written by the long-running agent, `lastHeartbeatAt >=
    upStartedAt`, and `lastError` is empty or `null`.
-6. On timeout, print `local_heartbeat_missing`; if LaunchAgent install/kickstart
-   fails, print `agent_not_running`. If the status file reports `lastError.kind`,
-   map it deterministically:
+6. Outcome precedence is deterministic. If LaunchAgent install/kickstart fails
+   before a run loop is started, print `agent_not_running`. Otherwise, a fresh
+   status receipt with `lastError.kind` after `upStartedAt` wins over the bare
+   timeout and maps deterministically:
    - `auth_failure` -> `auth_invalid`
    - `connection_failure` -> `server_unreachable`
    - `server_failure` -> `server_error`
    - `rate_limited` -> `rate_limited`
+   If no fresh success and no fresh structured error appear within 60 seconds,
+   print `local_heartbeat_missing`.
 7. Print a short locally-derived running status summary.
 
 `neul up` must not silently overwrite existing credentials. Any force/re-enroll
@@ -246,8 +249,12 @@ If the approval page is opened in a browser without owner session, it must not
 create or expose credentials. It shows recoverable copy: open this same approval
 URL in an already-authenticated owner browser, or create/restore the owner
 session first. The CLI continues polling `approval/claim` until approved,
-cancelled, or expired, so approval can happen from another authenticated device
-that can reach the self-hosted server.
+cancelled, or expired. The approval page must also say not to approve an
+approval URL received from another person or chat; this client-started approval
+is supported only when the owner personally started `neul login` and can compare
+the browser code against the terminal code. Moving the URL to another
+authenticated owner browser is acceptable only when the owner still has that
+terminal code in view.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives only
 the approval id, nonce, and verifier. It does not receive machine metadata and
@@ -325,15 +332,17 @@ credential release only; it does not turn an already claimed record back into
 
 The metadata binding is enforced in `/api/pair/claim`: approval-created pair
 codes carry expected hostname/name, OS, architecture, and agent version metadata
-in server-side storage. This requires a schema change that can distinguish
-approval-created pair codes from ordinary `/api/pair/init` fallback/debug codes.
-The minimal shape is an approval id or source kind plus nullable expected
-metadata columns on the pairing record. Ordinary `/api/pair/init` rows leave
-those fields empty and keep existing fallback/debug behavior. When
-`/api/pair/claim` receives metadata for an approval-created code, it rejects any
-mismatch before creating the machine credential. After pair claim succeeds, the
-approval record stores the claimed `machineId` so owner-session browser UI can
-watch the right machine.
+on the approval record, not on `pairing_codes`. This avoids non-idempotent
+`ALTER TABLE pairing_codes ADD COLUMN ...` migrations because the current
+migration runner re-executes every SQL file on each boot. When `approval/claim`
+creates the pair-code row, it stores the created pairing row id in
+`approvalPairingId`. When `/api/pair/claim` looks up the pair code, it checks
+for an approval record with that `approvalPairingId`; if present, it compares
+the submitted machine metadata against the approval record's expected metadata
+before creating the machine credential. Ordinary `/api/pair/init` rows have no
+matching approval record and keep existing fallback/debug behavior. After pair
+claim succeeds, the approval record stores the claimed `machineId` so
+owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 CLI-opened approval page. It receives approval id and returns one of:
@@ -409,9 +418,10 @@ Approval persistence:
   verifier.
 - `approval/claim` creates the one-time pair code only after the approval record
   is approved and verifier validation passes.
-- Pairing rows created from approval records store an approval id/source kind
-  plus nullable expected metadata so `/api/pair/claim` can enforce metadata
-  binding. Ordinary `/api/pair/init` rows leave those fields empty.
+- Pairing rows remain schema-compatible with current idempotent migrations.
+  Approval-created expected metadata stays on the approval record. The link is
+  `approval_records.approvalPairingId = pairing_codes.id`, populated when
+  `approval/claim` creates the one-time pair code.
 
 The implementation should reuse the existing pair claim machinery instead of
 creating a second machine registration system. Existing `/api/pair/claim`
@@ -483,7 +493,8 @@ Required contract edits:
 - Remove or rewrite device-code fallback copy for this slice. Device code is
   out of scope and must not be described as a fallback for removed callback or
   `neul://` handoffs.
-- Add a migration for approval records and approval-created pairing metadata.
+- Add a migration for approval records. Do not add columns to `pairing_codes`
+  unless the migration runner first gains idempotent applied-version tracking.
 - Rewrite the approval API subsection so it includes
   `POST /api/pair/approval/claim`, `GET /api/pair/approval/status`,
   nonce/verifier binding, and polling semantics.
@@ -631,9 +642,15 @@ Rules:
 
 - The primary command must not include `--pair`.
 - The fallback/debug block must be visually and semantically secondary.
-- The existing dashboard onboarding wizard is an instruction surface only: it
-  shows `neul login --server <origin>`, fallback/debug copy, and no approval
-  status polling.
+- The existing dashboard onboarding wizard is an instruction surface for the
+  primary flow: it shows `neul login --server <origin>` and does not poll
+  approval status.
+- The secondary fallback/debug block keeps its existing pair-code generator by
+  calling `POST /api/pair/init` and polling `GET /api/pair/poll`; it provides
+  the real `<pair-code>` used in
+  `go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once`.
+  This generator must remain visually secondary and must not replace
+  `neul login --server <origin>` as the primary path.
 - The CLI-opened `/enroll/approve?approval=<approval-id>&nonce=<nonce>` page
   owns approval status polling with `GET /api/pair/approval/status`.
 - If that page has no owner session, it shows copy telling the user to open the
@@ -713,6 +730,9 @@ Go tests:
   `auth_failure` -> `auth_invalid`, `connection_failure` ->
   `server_unreachable`, `server_failure` -> `server_error`, and `rate_limited`
   -> `rate_limited`.
+- `neul up` reports mapped `lastError.kind` instead of
+  `local_heartbeat_missing` when a fresh long-running status after `upStartedAt`
+  contains both no successful heartbeat and a structured `lastError.kind`.
 - `neul up` does not accept a connect-once/diagnostic status receipt as durable
   connected.
 - `neul login` fails clearly when approval expires, approval is cancelled,
@@ -721,11 +741,17 @@ Go tests:
   owner session for approval.
 - approval start is unauthenticated but rate-limited at 10/minute/IP and
   30/hour/IP, TTL-bounded, and returns a browser/terminal comparison code.
+- approval page copy warns not to approve URLs the owner did not personally
+  initiate with `neul login`, and requires matching the browser comparison code
+  against the terminal code.
 - approval records persist nonce hash, verifier challenge, plaintext CSRF
   token, plaintext comparison code, state, machine preview metadata, expiry,
   pairCodeIssuedAt, approvalPairingId, claimedRetainUntil, claim failure count,
   and claimed machine id without storing pair code, machine token, setup token,
   or plaintext verifier.
+- approval migration does not add columns to `pairing_codes`; `/api/pair/claim`
+  enforces approval-created expected metadata by joining
+  `approval_records.approvalPairingId` to the existing pairing row id.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
 - approval claim rejects missing or incorrect verifier after owner approval.
@@ -790,8 +816,10 @@ Fallback demo QA:
 3. Open the dashboard onboarding wizard.
 4. Confirm primary copy is `neul login --server <origin>` and fallback/debug copy
    is visibly secondary.
-5. Use the fallback/debug `go run ./cmd/neul agent enroll ... --connect-once`
-   path only to prove existing checkout demo enrollment and heartbeat still work.
+5. Generate a fallback pair code from the secondary fallback/debug block.
+6. Use the fallback/debug `go run ./cmd/neul agent enroll ... --connect-once`
+   path with that code only to prove existing checkout demo enrollment and
+   heartbeat still work.
 
 Packaged macOS QA:
 
