@@ -161,6 +161,10 @@ type loginApprovalServer struct {
 
 func newLoginApprovalServer(t *testing.T, options loginApprovalServerOptions) *loginApprovalServer {
 	t.Helper()
+	restoreBrowser := overrideBrowserOpenForTest(t, func(string) error {
+		return nil
+	})
+	t.Cleanup(restoreBrowser)
 	loginServer := &loginApprovalServer{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

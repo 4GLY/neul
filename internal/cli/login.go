@@ -70,6 +70,7 @@ func runLogin(args []string, stdout io.Writer) error {
 	if _, err := fmt.Fprintf(stdout, "브라우저에서 이 요청을 승인하세요: %s\n비교 코드: %s\n", start.ApprovalURL, start.ComparisonCode); err != nil {
 		return err
 	}
+	_ = openApprovalURL(start.ApprovalURL)
 
 	pairCode, err := pollApprovalClaim(origin, proof, start)
 	if err != nil {
