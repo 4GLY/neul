@@ -74,10 +74,11 @@ Already joined behavior:
 3. On macOS, verify the LaunchAgent with the existing `agent status` probe and
    install/kickstart with the existing `agent install` LaunchAgent path when the
    config and agent binary are present.
-4. Optionally run one machine-token heartbeat tick to prove the server accepts
-   the stored machine credential. `neul up` must not call owner-session routes
-   such as `/api/dashboard`, `/api/machines`, or `/api/machines/:machineId`.
-5. Print a short locally-derived fleet status summary.
+4. Wait for the long-running agent to write a successful heartbeat status. A
+   one-shot diagnostic heartbeat must not be used to satisfy connected state.
+   `neul up` must not call owner-session routes such as `/api/dashboard`,
+   `/api/machines`, or `/api/machines/:machineId`.
+5. Print a short locally-derived running status summary.
 6. If the agent is not healthy, explain the recoverable state:
    `server_unreachable`, `agent_not_running`, `local_heartbeat_missing`, or
    `auth_invalid`.
@@ -142,6 +143,7 @@ Target endpoints:
 - server origin
 - client nonce
 - verifier challenge
+- machine preview metadata: hostname, OS, architecture, and agent version
 - callback URL bound to `127.0.0.1`
 
 The server validates the callback URL before storing the approval record. It
@@ -160,18 +162,24 @@ and nonce, for example:
 It must be abuse-bounded with short TTL records, per-callback/per-IP rate
 limits, and no secret material in the response.
 
-`approval/approve` is a CSRF-protected owner-session action. It creates a
-short-lived approval record bound to the client nonce and verifier challenge.
-It does not put pair code, pair token, or machine token in the browser URL.
+`approval/approve` is a CSRF-protected owner-session action. The approval page
+must show the requesting machine context before approval: hostname, OS,
+architecture, agent version, callback host, and requested time. It marks the
+short-lived approval record as approved, bound to the client nonce, verifier
+challenge, callback URL, and machine preview metadata. It does not put pair
+code, pair token, or machine token in the browser URL.
 
 `POST /api/pair/approval/claim` is a machine-client action that receives the
 approval id, nonce, and verifier. It does not require owner session. Before the
 owner approves, it returns `pending`; after cancellation or expiry it returns
 `cancelled` or `expired`; after approval it creates or returns one opaque pair
-code from the same `pairing_codes` storage used by `/api/pair/init`. The CLI
-then calls the existing `/api/pair/claim` with that code and machine metadata.
-After pair claim succeeds, the approval record stores the claimed `machineId`
-so owner-session browser UI can watch the right machine.
+code from the same `pairing_codes` storage used by `/api/pair/init`. The server
+must reject missing or incorrect verifiers by checking the submitted verifier
+against the challenge stored by `approval/start`. The CLI then calls the
+existing `/api/pair/claim` with that code and machine metadata. The claim
+metadata must match the machine preview metadata from `approval/start`. After
+pair claim succeeds, the approval record stores the claimed `machineId` so
+owner-session browser UI can watch the right machine.
 
 `GET /api/pair/approval/status` is an owner-session status endpoint for the
 approval page and onboarding wizard. It receives approval id and returns one of:
@@ -188,6 +196,8 @@ Guardrails:
 - Pair code is single-use and short-lived.
 - Approval status never returns pair code, pair token, or machine token.
 - Approval start is unauthenticated but rate-limited and TTL-bounded.
+- Approval claim rejects absent, malformed, or challenge-mismatched verifier.
+- Approval page shows requesting machine context before the owner approves.
 - Pair code and machine token are never written to server logs.
 - Browser code must not receive or store pair code or machine token in
   localStorage.
@@ -196,8 +206,12 @@ Guardrails:
   browser URL.
 - Local callback listener is single-shot and closes after success, rejection, or
   timeout.
-- Local callback carries only approval id, approved/cancelled state, and nonce.
+- Local callback is best-effort. The browser approval page may wake the CLI with
+  a top-level navigation or redirect to
+  `http://127.0.0.1:<port>/callback?approval=<approval-id>&state=<approved|cancelled>&nonce=<nonce>`.
   The CLI rejects callbacks whose nonce does not match the generated nonce.
+- Polling `POST /api/pair/approval/claim` is authoritative; the callback only
+  wakes the CLI sooner.
 - Concurrent `neul login` runs use distinct nonces and callback ports.
 
 This avoids relying on browser `fetch` from the server origin to
@@ -224,8 +238,12 @@ Required contract edits:
   TTL-bounded.
 - State that `approval/claim` is the CLI polling/exchange route and does not
   require owner session.
+- State that `approval/claim` must verify the submitted verifier against the
+  stored verifier challenge before returning a pair code.
 - State that `approval/status` is owner-session-only and exists for approval
   page/onboarding status, not for CLI polling.
+- State that approval pages show requesting machine context before owner
+  approval.
 - Remove the old claim that `approval/approve` delivers a pair token through
   the local callback or `neul://...&pair=<token>`.
 - State that browser approval never receives pair code, pair token, or machine
@@ -274,12 +292,14 @@ Rules:
 - The approval page or onboarding wizard reads the approval id from the
   approval URL opened by `neul login` and polls
   `GET /api/pair/approval/status`.
-- The 120 second heartbeat window starts when approval status first returns
-  `claimed` with `machineId`.
+- After approval status first returns `claimed` with `machineId`, the web shows
+  a waiting state that tells the user to run `neul up`.
 - Connected state is shown only after the first heartbeat makes the machine
   visible in `GET /api/dashboard`.
-- If heartbeat does not appear within 120 seconds, web shows
-  `agent_not_responding`.
+- The old 120 second post-claim `agent_not_responding` timer is removed for
+  this split flow because `neul login` no longer starts the agent. A future
+  `agent_not_responding` timer can start from a durable agent-start event, not
+  from login claim.
 
 ## State Flow
 
@@ -312,10 +332,10 @@ Already joined:
 neul up
   -> config exists
   -> local status and LaunchAgent state checked
-  -> optional machine-token heartbeat tick checks server/auth
   -> macOS user-level agent installed/kickstarted or verified
-  -> first server-accepted heartbeat makes dashboard connected
-  -> local fleet status summary printed
+  -> long-running agent writes successful heartbeat status
+  -> dashboard heartbeat makes machine connected
+  -> local running status summary printed
 ```
 
 Not healthy:
@@ -348,10 +368,14 @@ Go tests:
 - approval start rejects callback URLs that are not `http://127.0.0.1:<port>/...`.
 - approval claim is machine-client polling/exchange and does not require owner
   session.
+- approval claim rejects missing or incorrect verifier after owner approval.
+- approval claim rejects machine metadata that does not match approval start
+  preview metadata.
 - approval status requires owner session and is not used by CLI polling.
 - approval status returns claimed `machineId` and `claimedAt`, but never returns
   pair code, pair token, or machine token.
 - callback rejects mismatched nonce.
+- callback wake-up is best-effort; claim polling is authoritative.
 - pair code can be claimed once.
 - `neul up` does not call owner-session dashboard or machine routes.
 - `neul up` uses existing `agent install`/`agent status` primitives, not the
@@ -364,9 +388,9 @@ Web tests:
 - onboarding primary command does not include `--pair`.
 - fallback/debug command includes `--pair` only in the secondary block.
 - onboarding approval polling identifies the claimed machine by `machineId`.
-- onboarding 120 second timeout starts at approval `claimedAt`.
+- onboarding shows "run `neul up`" after approval `claimedAt`.
+- onboarding does not start the old 120 second timeout from login claim.
 - claimed machine moves to connected only after dashboard heartbeat evidence.
-- `agent_not_responding` appears after the 120 second timeout.
 
 Manual QA:
 
