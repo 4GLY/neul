@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -48,6 +49,9 @@ func randomComparisonCode() (string, error) {
 
 func requestOrigin(r *http.Request) string {
 	scheme := r.URL.Scheme
+	if forwardedProto := firstForwardedHeader(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = forwardedProto
+	}
 	if scheme == "" {
 		scheme = "http"
 		if r.TLS != nil {
@@ -55,10 +59,18 @@ func requestOrigin(r *http.Request) string {
 		}
 	}
 	host := r.Host
+	if forwardedHost := firstForwardedHeader(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
+		host = forwardedHost
+	}
 	if host == "" {
 		host = r.URL.Host
 	}
 	return scheme + "://" + host
+}
+
+func firstForwardedHeader(value string) string {
+	first, _, _ := strings.Cut(value, ",")
+	return strings.TrimSpace(first)
 }
 
 func requestIP(r *http.Request) string {
