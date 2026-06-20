@@ -58,3 +58,42 @@ func TestSetupTokenTTLFromEnv_whenEnvIsNonPositive_returnsError(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicOriginFromEnv_whenEnvIsUnset_returnsEmptyOrigin(t *testing.T) {
+	t.Setenv("NEUL_PUBLIC_ORIGIN", "")
+
+	origin, err := publicOriginFromEnv()
+
+	if err != nil {
+		t.Fatalf("publicOriginFromEnv() error = %v, want nil", err)
+	}
+	if origin != "" {
+		t.Fatalf("origin = %q, want empty", origin)
+	}
+}
+
+func TestPublicOriginFromEnv_whenEnvIsValid_returnsOrigin(t *testing.T) {
+	t.Setenv("NEUL_PUBLIC_ORIGIN", "https://neul.4gly.dev/")
+
+	origin, err := publicOriginFromEnv()
+
+	if err != nil {
+		t.Fatalf("publicOriginFromEnv() error = %v, want nil", err)
+	}
+	if origin != "https://neul.4gly.dev" {
+		t.Fatalf("origin = %q, want canonical origin", origin)
+	}
+}
+
+func TestPublicOriginFromEnv_whenEnvIncludesPath_returnsError(t *testing.T) {
+	t.Setenv("NEUL_PUBLIC_ORIGIN", "https://neul.4gly.dev/path")
+
+	_, err := publicOriginFromEnv()
+
+	if err == nil {
+		t.Fatal("publicOriginFromEnv() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "scheme and host") {
+		t.Fatalf("error = %q, want origin-only message", err)
+	}
+}

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -47,11 +46,11 @@ func randomComparisonCode() (string, error) {
 	return fmt.Sprintf("%03d-%03d", n/1000, n%1000), nil
 }
 
-func requestOrigin(r *http.Request) string {
-	scheme := r.URL.Scheme
-	if forwardedProto := firstForwardedHeader(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
-		scheme = forwardedProto
+func requestOrigin(r *http.Request, publicOrigin string) string {
+	if publicOrigin != "" {
+		return publicOrigin
 	}
+	scheme := r.URL.Scheme
 	if scheme == "" {
 		scheme = "http"
 		if r.TLS != nil {
@@ -59,18 +58,10 @@ func requestOrigin(r *http.Request) string {
 		}
 	}
 	host := r.Host
-	if forwardedHost := firstForwardedHeader(r.Header.Get("X-Forwarded-Host")); forwardedHost != "" {
-		host = forwardedHost
-	}
 	if host == "" {
 		host = r.URL.Host
 	}
 	return scheme + "://" + host
-}
-
-func firstForwardedHeader(value string) string {
-	first, _, _ := strings.Cut(value, ",")
-	return strings.TrimSpace(first)
 }
 
 func requestIP(r *http.Request) string {
@@ -100,9 +91,9 @@ func approvalOwnerSessionKey(w http.ResponseWriter, r *http.Request, db *sql.DB)
 	return sessionHash, true
 }
 
-func sameOriginRequest(r *http.Request) bool {
+func sameOriginRequest(r *http.Request, publicOrigin string) bool {
 	if origin := r.Header.Get("Origin"); origin != "" {
-		return origin == requestOrigin(r)
+		return origin == requestOrigin(r, publicOrigin)
 	}
 	referer := r.Header.Get("Referer")
 	if referer == "" {
@@ -112,7 +103,7 @@ func sameOriginRequest(r *http.Request) bool {
 	if err != nil {
 		return false
 	}
-	return parsed.Scheme+"://"+parsed.Host == requestOrigin(r)
+	return parsed.Scheme+"://"+parsed.Host == requestOrigin(r, publicOrigin)
 }
 
 func approvalRecordExpired(record approvalRecord, now time.Time) bool {

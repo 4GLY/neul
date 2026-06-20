@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func handleApprovalStart(db *sql.DB, clock func() time.Time, limits *approvalRateLimiters) http.HandlerFunc {
+func handleApprovalStart(db *sql.DB, clock func() time.Time, limits *approvalRateLimiters, publicOrigin string) http.HandlerFunc {
 	type requestBody struct {
 		Nonce             string           `json:"nonce"`
 		VerifierChallenge string           `json:"verifierChallenge"`
@@ -67,7 +67,7 @@ func handleApprovalStart(db *sql.DB, clock func() time.Time, limits *approvalRat
 			writeJSONError(w, http.StatusInternalServerError, "approval_start_failed", "Could not create approval.")
 			return
 		}
-		approvalURL := requestOrigin(r) + "/enroll/approve?approval=" + url.QueryEscape(approvalID) + "&nonce=" + url.QueryEscape(body.Nonce)
+		approvalURL := requestOrigin(r, publicOrigin) + "/enroll/approve?approval=" + url.QueryEscape(approvalID) + "&nonce=" + url.QueryEscape(body.Nonce)
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"approvalId":     approvalID,
 			"approvalUrl":    approvalURL,
@@ -78,7 +78,7 @@ func handleApprovalStart(db *sql.DB, clock func() time.Time, limits *approvalRat
 	}
 }
 
-func handleApprovalApprove(db *sql.DB, clock func() time.Time, limits *approvalRateLimiters) http.HandlerFunc {
+func handleApprovalApprove(db *sql.DB, clock func() time.Time, limits *approvalRateLimiters, publicOrigin string) http.HandlerFunc {
 	type requestBody struct {
 		ApprovalID string `json:"approvalId"`
 		Nonce      string `json:"nonce"`
@@ -95,7 +95,7 @@ func handleApprovalApprove(db *sql.DB, clock func() time.Time, limits *approvalR
 			writeJSONError(w, http.StatusTooManyRequests, "approval_approve_rate_limited", "Approval approve rate limit exceeded.")
 			return
 		}
-		if !sameOriginRequest(r) {
+		if !sameOriginRequest(r, publicOrigin) {
 			writeJSONError(w, http.StatusForbidden, "approval_origin_invalid", "Approval request origin is invalid.")
 			return
 		}

@@ -18,6 +18,7 @@ type Config struct {
 	HomeDir          string
 	SetupTokenWriter io.Writer
 	SetupTokenTTL    time.Duration
+	PublicOrigin     string
 }
 
 func NewRouter(config Config) http.Handler {
@@ -44,8 +45,8 @@ func NewRouter(config Config) http.Handler {
 	mux.Handle("POST /api/pair/init", requireOwnerSession(config.DB, handlePairInit(config.DB, config.Clock)))
 	mux.HandleFunc("POST /api/pair/claim", handlePairClaim(config.DB, config.Clock))
 	mux.Handle("GET /api/pair/poll", requireOwnerSession(config.DB, handlePairPoll(config.DB, config.Clock)))
-	mux.HandleFunc("POST /api/pair/approval/start", handleApprovalStart(config.DB, config.Clock, approvalLimits))
-	mux.HandleFunc("POST /api/pair/approval/approve", handleApprovalApprove(config.DB, config.Clock, approvalLimits))
+	mux.HandleFunc("POST /api/pair/approval/start", handleApprovalStart(config.DB, config.Clock, approvalLimits, config.PublicOrigin))
+	mux.HandleFunc("POST /api/pair/approval/approve", handleApprovalApprove(config.DB, config.Clock, approvalLimits, config.PublicOrigin))
 	mux.HandleFunc("POST /api/pair/approval/claim", handleApprovalClaim(config.DB, config.Clock, approvalLimits))
 	mux.HandleFunc("GET /api/pair/approval/status", handleApprovalStatus(config.DB, config.Clock, approvalLimits))
 	mux.Handle("GET /api/dashboard", requireOwnerSession(config.DB, handleDashboard(config.DB, config.Clock)))

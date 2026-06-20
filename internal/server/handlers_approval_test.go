@@ -65,9 +65,9 @@ func TestApprovalStart_whenValid_returnsApprovalURLAndComparisonCode(t *testing.
 	}
 }
 
-func TestApprovalStart_whenForwardedHTTPS_returnsForwardedApprovalURL(t *testing.T) {
+func TestApprovalStart_whenPublicOriginConfigured_returnsPublicApprovalURL(t *testing.T) {
 	db := openServerTestDB(t)
-	router := NewRouter(Config{DB: db})
+	router := NewRouter(Config{DB: db, PublicOrigin: "https://neul.4gly.dev"})
 	nonce, _, challenge := approvalClientProofForTest()
 
 	request := httptest.NewRequest(
@@ -76,8 +76,6 @@ func TestApprovalStart_whenForwardedHTTPS_returnsForwardedApprovalURL(t *testing
 		strings.NewReader(`{"nonce":"`+nonce+`","verifierChallenge":"`+challenge+`","machine":{"name":"joon-macbook","os":"darwin","arch":"arm64","agentVersion":"0.1.0"}}`),
 	)
 	request.Host = "neul-server.neul.svc.cluster.local"
-	request.Header.Set("X-Forwarded-Proto", "https")
-	request.Header.Set("X-Forwarded-Host", "neul.4gly.dev")
 	recorder := httptest.NewRecorder()
 
 	router.ServeHTTP(recorder, request)
@@ -94,7 +92,7 @@ func TestApprovalStart_whenForwardedHTTPS_returnsForwardedApprovalURL(t *testing
 		t.Fatalf("Parse approvalUrl error = %v", err)
 	}
 	if approvalURL.Scheme != "https" || approvalURL.Host != "neul.4gly.dev" {
-		t.Fatalf("approvalUrl = %q, want forwarded https origin", body.ApprovalURL)
+		t.Fatalf("approvalUrl = %q, want configured public origin", body.ApprovalURL)
 	}
 }
 
@@ -114,9 +112,13 @@ func TestApprovalApprove_whenMissingOwnerSession_returnsOwnerSessionRequired(t *
 	}
 }
 
-func TestApprovalApprove_whenForwardedHTTPSOrigin_approvesRequest(t *testing.T) {
+func TestApprovalApprove_whenPublicOriginConfigured_approvesRequest(t *testing.T) {
 	db := openServerTestDB(t)
-	router, cookie := authenticatedRouter(t, db, time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC))
+	router, cookie := authenticatedRouterWithConfig(t, Config{
+		DB:           db,
+		Clock:        func() time.Time { return time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC) },
+		PublicOrigin: "https://neul.4gly.dev",
+	})
 	approval := startApprovalForTest(t, router, approvalStartForTest{})
 	csrf := approvalStatusForTest(t, router, cookie, approval.ApprovalID).CSRFToken
 	request := httptest.NewRequest(
@@ -126,8 +128,6 @@ func TestApprovalApprove_whenForwardedHTTPSOrigin_approvesRequest(t *testing.T) 
 	)
 	request.Host = "neul-server.neul.svc.cluster.local"
 	request.Header.Set("Origin", "https://neul.4gly.dev")
-	request.Header.Set("X-Forwarded-Proto", "https")
-	request.Header.Set("X-Forwarded-Host", "neul.4gly.dev")
 	request.AddCookie(cookie)
 	recorder := httptest.NewRecorder()
 
@@ -135,6 +135,35 @@ func TestApprovalApprove_whenForwardedHTTPSOrigin_approvesRequest(t *testing.T) 
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+}
+
+func TestApprovalApprove_whenOriginDoesNotMatchPublicOrigin_returnsApprovalOriginInvalid(t *testing.T) {
+	db := openServerTestDB(t)
+	router, cookie := authenticatedRouterWithConfig(t, Config{
+		DB:           db,
+		Clock:        func() time.Time { return time.Date(2026, 6, 19, 8, 0, 0, 0, time.UTC) },
+		PublicOrigin: "https://neul.4gly.dev",
+	})
+	approval := startApprovalForTest(t, router, approvalStartForTest{})
+	csrf := approvalStatusForTest(t, router, cookie, approval.ApprovalID).CSRFToken
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"http://neul-server.neul.svc.cluster.local/api/pair/approval/approve",
+		strings.NewReader(`{"approvalId":"`+approval.ApprovalID+`","nonce":"`+approval.Nonce+`","csrfToken":"`+csrf+`","decision":"approve"}`),
+	)
+	request.Host = "neul-server.neul.svc.cluster.local"
+	request.Header.Set("Origin", "https://evil.example")
+	request.AddCookie(cookie)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusForbidden, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "approval_origin_invalid") {
+		t.Fatalf("body = %s, want approval_origin_invalid", recorder.Body.String())
 	}
 }
 
