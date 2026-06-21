@@ -43,6 +43,37 @@ func TestAgentInstallDryRun_resolvesDefaultAgentBinary_whenFlagOmitted(t *testin
 	assertPathMissing(t, wantPlist)
 }
 
+func TestAgentInstallDryRun_resolvesLocalSiblingAgentBinary_whenPresent(t *testing.T) {
+	// Given
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	prefix := t.TempDir()
+	binDir := filepath.Join(prefix, "bin")
+	libexecDir := filepath.Join(prefix, "libexec")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() bin error = %v", err)
+	}
+	if err := os.MkdirAll(libexecDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() libexec error = %v", err)
+	}
+	agentBinary := writeExecutableBinary(t, libexecDir)
+	restoreExecutable := overrideExecutablePath(t, filepath.Join(binDir, "neul"))
+	defer restoreExecutable()
+	configPath := writeTestConfig(t)
+	var stdout strings.Builder
+
+	// When
+	err := Run([]string{"agent", "install", "--dry-run", "--config", configPath}, &stdout, &stdout)
+
+	// Then
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "binary:  "+agentBinary+"\n") {
+		t.Fatalf("stdout = %q, want local sibling agent binary %s", stdout.String(), agentBinary)
+	}
+}
+
 func TestAgentInstallDryRun_reflectsOverrideFlags(t *testing.T) {
 	// Given
 	configPath := writeTestConfig(t)
@@ -335,5 +366,16 @@ func overrideAgentServiceGOOS(t *testing.T, goos string) func() {
 	agentServiceGOOS = goos
 	return func() {
 		agentServiceGOOS = previous
+	}
+}
+
+func overrideExecutablePath(t *testing.T, path string) func() {
+	t.Helper()
+	previous := executablePath
+	executablePath = func() (string, error) {
+		return path, nil
+	}
+	return func() {
+		executablePath = previous
 	}
 }

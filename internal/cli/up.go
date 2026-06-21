@@ -21,7 +21,7 @@ func runUp(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("up", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	configPath := flags.String("config", defaultConfigPath(), "config path")
-	agentBinary := flags.String("agent-binary", defaultLaunchdAgentBinaryPath, "agent binary path")
+	agentBinary := flags.String("agent-binary", defaultLaunchdAgentBinary(), "agent binary path")
 	plistPath := flags.String("plist", "", "launch agent plist path")
 	statusPath := flags.String("status", "", "status file path")
 	logPath := flags.String("log", "", "log file path")

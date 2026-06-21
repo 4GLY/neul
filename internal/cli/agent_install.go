@@ -13,7 +13,7 @@ func runAgentInstallCommand(args []string, stdout io.Writer) error {
 	flags.SetOutput(io.Discard)
 	dryRun := flags.Bool("dry-run", false, "preview service install")
 	configPath := flags.String("config", defaultConfigPath(), "config path")
-	agentBinary := flags.String("agent-binary", defaultLaunchdAgentBinaryPath, "agent binary path")
+	agentBinary := flags.String("agent-binary", defaultLaunchdAgentBinary(), "agent binary path")
 	plistPath := flags.String("plist", "", "launch agent plist path")
 	statusPath := flags.String("status", "", "status file path")
 	logPath := flags.String("log", "", "log file path")
