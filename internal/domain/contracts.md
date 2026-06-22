@@ -15,9 +15,8 @@ conflicts with this file or `docs/mvp.md`, the MVP contract here wins.
 - Hosted tier, teams, RBAC, SSO, billing, root path mutation, remote terminal
   execution, arbitrary shell commands, and real service installation are out.
 - Agent Onboarding UX v2 has no `/install.sh`: no /install.sh endpoint, no
-  `curl | sh`, no hosted login, and no pending approval table. The primary
-  user path is packaged neul client install plus browser approval, not a
-  checkout-local command.
+  `curl | sh`, and no hosted login. The primary user path is packaged neul
+  client install plus browser approval, not a checkout-local command.
 
 ## Auth Defaults
 
@@ -30,18 +29,19 @@ conflicts with this file or `docs/mvp.md`, the MVP contract here wins.
 - Setup tokens, pairing codes, owner sessions, and machine tokens are hashed at
   rest; plaintext values are printed or returned only at creation time.
 - Self-hosted owner approval model: an existing owner browser session approves
-  a local client enrollment. The server creates a short-lived pair token only
-  after that approval, and the client claims it once.
-- Pair tokens are bearer credentials. Browser code must not put pair tokens in
-  URL query strings, `document.title`, browser history, logs, or any location
-  other than the local callback, `neul://` deep-link handoff, or explicit
-  fallback/debug copyable enroll command.
+  a local client enrollment. Browser approval receives only approval id, nonce,
+  comparison code, machine preview metadata, CSRF, and status.
+- Pair codes are one-time `/api/pair/claim` values. Browser code must not put
+  pair codes, pair tokens, machine tokens, setup tokens, or plaintext verifiers
+  in browser copy, URL query strings, `document.title`, browser history,
+  localStorage, or logs.
+- `/api/pair/claim` remains the only machine credential creator.
 
 ## Timing And Version Defaults
 
 - Pairing codes expire exactly 10 minutes after creation.
-- Pair poll is the source of truth for onboarding expiry. Expired unused pair
-  codes return HTTP 200 with `status: "expired"` and `expiresAt`.
+- `GET /api/pair/poll` is the source of truth only for fallback/debug pair-code expiry. Expired unused pair codes return HTTP 200 with `status: "expired"` and `expiresAt`.
+- Approval expiry uses `GET /api/pair/approval/status`.
 - Expired pairing claims return `410 Gone` with error code
   `pairing_code_expired`.
 - Agent heartbeat interval is 30 seconds.
@@ -102,16 +102,22 @@ Primary packaged client onboarding flow:
 3. The macOS `.pkg` installs `/usr/local/bin/neul` and
    `/usr/local/libexec/neul-agent`; LaunchAgent registration remains a
    per-user `neul agent install` action.
-4. The packaged client runs `neul enroll --server <origin>`, opens browser
-   approval, and starts a local callback; local callback binds to 127.0.0.1 only.
-5. After owner approval, the server creates a one-time pair token and returns it
-   through the local callback or `neul://enroll?server=<origin>&pair=<token>`.
-6. CLI claims the pair token, writes local config with mode `0600`, and starts
-   the user-level agent.
-7. Web moves from `claimed_waiting_heartbeat` to `connected` only after the
-   first heartbeat makes the machine visible in `GET /api/dashboard`.
-8. If the claimed machine does not heartbeat within 120 seconds, web shows
-   `agent_not_responding`.
+4. The packaged client runs `neul login --server <origin>`, starts browser
+   approval, and polls `POST /api/pair/approval/claim`; approval claim is machine-client polling, not a browser credential handoff.
+5. The owner browser receives only approval id, nonce, comparison code, machine
+   preview metadata, CSRF, and status. It never receives pair code, pair token,
+   machine token, setup token, or plaintext verifier copy.
+6. After owner approval, the CLI receives an opaque pair code from
+   `POST /api/pair/approval/claim` and submits it with machine metadata to
+   `/api/pair/claim`. `/api/pair/claim` creates the machine credential.
+7. `neul login` writes local config with mode `0600`, reports enrollment
+   success, and points the user to `neul up`.
+8. `neul up` starts or verifies the user-level agent. Web moves to `connected`
+   only after a fresh long-running agent heartbeat makes the machine visible in
+   `GET /api/dashboard`.
+9. Heartbeat timeout starts from a durable `neul up` agent-start attempt, not
+   from `/api/pair/claim` or `neul login` success. If that attempt does not
+   produce a fresh heartbeat within its timeout, web shows `agent_not_responding`.
 
 First-run states are `not_logged_in`, `waiting_for_browser_approval`,
 `enrolled`, `offline`, and `error`.
@@ -126,46 +132,44 @@ First-run state mapping:
 | --- | --- |
 | `not_logged_in` | `creating` until owner session is restored or requested |
 | `waiting_for_browser_approval` | `ready` or `claimed_waiting_heartbeat` |
-| `enrolled` | `connected` |
+| `enrolled` | `claimed_waiting_heartbeat` until `neul up` produces a fresh heartbeat |
 | `offline` | `agent_not_responding` |
 | `error` | `expired`, `used`, `cancelled`, or `error` |
-
-Device code is fallback-only for headless or SSH environments where local
-callback or `neul://` handoff cannot complete.
 
 Pairing browser approval API:
 
 Target contract for packaged-client implementation. These endpoints are deferred
 until the packaging work that follows this design issue.
 
-- `POST /api/pair/approval/start` receives the client nonce, callback URL, and
-  server origin. It returns an approval URL for the owner browser.
+- `POST /api/pair/approval/start` receives the client nonce, verifier
+  challenge, and machine preview metadata. It returns an approval URL for the
+  owner browser.
 - `POST /api/pair/approval/approve` is a CSRF-protected owner-session action
-  that creates one short-lived, single-use pair token bound to the client nonce.
-- `POST http://127.0.0.1:<ephemeral-port>/callback` is the local callback
-  delivery. The client listener is single-shot and closes after success,
-  rejection, or timeout.
-- `neul://enroll?server=<origin>&pair=<token>&nonce=<nonce>` is the deep-link
-  delivery only when the packaged client owns the scheme handler.
-- Concurrent `neul enroll` runs use distinct nonces and callback ports; a token
-  can be claimed once through `POST /api/pair/claim`.
+  that approves or cancels the short-lived approval record.
+- `POST /api/pair/approval/claim` is the CLI polling exchange. It validates the
+  nonce and verifier, then returns a one-time pair code only after owner
+  approval.
+- `GET /api/pair/approval/status` lets the owner browser read approval status,
+  comparison code, machine preview metadata, and CSRF only.
+- Concurrent `neul login` runs use distinct approval ids, nonces, and
+  verifiers; a pair code can be claimed once through `POST /api/pair/claim`.
 
 <!-- packaged-primary:end -->
 
 Fallback/debug checkout-local enrollment:
 
 Development and QA may still run
-`go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once`
+`go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once`
 from the repository checkout. Until packaged approval ships, the web wizard
 also shows this executable command in a separate fallback/debug block so a
 first-time owner can still claim the invite and reach connected state. That
 command is not the primary product UX.
 
 Package QA may use the installed binary equivalent,
-`neul agent enroll --server <origin> --pair <token> --connect-once`, followed by
+`neul agent enroll --server <origin> --pair <pair-code> --connect-once`, followed by
 `neul agent install`. Legacy/debug compatibility keeps
 `neul init --pair --server`; neither command may replace the primary
-`neul enroll --server <origin>` product command.
+`neul login --server <origin>` product command.
 
 Unsigned dev `.pkg` artifacts are local-testing only. Contracts, docs, and
 validation must not imply they are production-ready, signed, notarized, or

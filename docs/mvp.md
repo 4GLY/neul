@@ -21,10 +21,10 @@ MVP의 핵심 성공 기준은 다음이다.
 #### 첫 머신 등록
 
 사용자는 웹에서 첫 머신 등록 wizard를 열고, packaged neul client를 설치한
-뒤 browser approval로 agent를 등록한다. 이번 MVP의 target flow는
-self-hosted owner session을 가진 브라우저가 승인 주체이고, agent는 outbound
-REST만 사용한다. 별도의 hosted login, OAuth/SSO, pending approval table은
-만들지 않는다.
+뒤 browser approval로 machine credential을 만든다. 이번 MVP의 target
+flow는 self-hosted owner session을 가진 브라우저가 승인 주체이고, agent는
+outbound REST만 사용한다. 별도의 hosted login, OAuth/SSO, secret runtime
+surface는 만들지 않는다.
 
 MVP 플로우:
 
@@ -39,29 +39,36 @@ MVP 플로우:
 3. macOS `.pkg` installs `neul` at `/usr/local/bin/neul` and `neul-agent` at
    `/usr/local/libexec/neul-agent`; per-user LaunchAgent registration is
    handled by `neul agent install`.
-4. 사용자가 `neul enroll --server <origin>`을 실행하면 client가
-   `127.0.0.1` local callback을 열고 browser approval URL을 연다.
-5. owner session이 있는 브라우저가 승인하면 서버는 10분 뒤 만료되는
-   one-time pair token을 만들고 `neul://enroll?server=<origin>&pair=<token>`
-   deep link 또는 local callback으로 client에 돌려준다.
-6. client는 pair token을 claim하고 local config를 `0600` 권한으로 저장한
-   뒤 user-level agent를 시작한다.
-7. agent가 heartbeat, desired-state fetch, drift/report 경로를 실제
-   reconcile 루프로 통과하면 웹은 `connected`로 전환한다.
-8. claim 이후 120초 안에 heartbeat가 보이지 않으면 웹은
+4. 사용자가 `neul login --server <origin>`을 실행하면 client가 approval
+   record를 만들고 browser approval URL을 연 뒤 browser approval polling을
+   시작한다.
+5. owner session이 있는 브라우저는 approval id, nonce, comparison code,
+   machine preview metadata, CSRF, status만 받는다. 브라우저 copy, URL,
+   title, history, localStorage, log에는 pair code, pair token, machine
+   token, setup token, plaintext verifier를 넣지 않는다.
+6. owner가 승인하면 client는 `POST /api/pair/approval/claim`을 polling해
+   opaque pair code를 받고, machine metadata와 함께 `/api/pair/claim`에
+   제출한다. `/api/pair/claim`만 machine credential을 만든다.
+7. `neul login`은 local config를 `0600` 권한으로 저장하고 enrollment
+   success를 보고한다. durable running/connected state는 claim하지 않고
+   다음 실행 명령으로 `neul up`을 안내한다.
+8. `neul up`은 user-level agent를 시작하거나 확인하고, long-running agent의
+   fresh heartbeat가 보일 때만 connected 상태를 만든다.
+9. heartbeat 대기 timeout은 `/api/pair/claim` 또는 `neul login` 성공 시각이
+   아니라 durable `neul up` agent-start attempt 시각에서 시작한다. 그
+   attempt 이후 timeout 안에 fresh heartbeat가 보이지 않으면 웹은
    `agent_not_responding` 상태와 retry/help copy를 보여준다.
 
 First-run states: `not_logged_in`, `waiting_for_browser_approval`, `enrolled`,
 `offline`, `error`.
 
 Self-hosted owner approval model: self-hosted 서버에 이미 로그인한 owner
-session만 machine approval을 만들 수 있다. pair token possession은 browser
-approval이 끝난 뒤 client가 받는 단명 bearer credential이다. The allowed pair-token handoffs are `127.0.0.1` local callback responses, `neul://enroll` deep links,
-and the explicit fallback/debug command. 그 외 server log, general URL query
-string, `document.title`, browser history에는 pair token을 남기지 않는다.
-
-Device code is fallback-only: local callback 또는 `neul://` deep link가 막힌
-headless/SSH 환경에서만 device code를 보여준다.
+session만 browser approval을 승인할 수 있다. pair code는 `/api/pair/claim`이
+한 번 소비하는 값이며, browser-safe approval handoffs는 approval id, nonce,
+comparison code, machine preview metadata, CSRF, status뿐이다. Pair code,
+pair token, machine token, setup token, plaintext verifier는 browser copy,
+general URL query string, `document.title`, browser history, localStorage,
+server log에 남기지 않는다.
 
 Approval API and package artifacts are target contract for the packaged-client
 implementation. Until they ship, executable local QA uses only the
@@ -314,8 +321,9 @@ Agent는 HTTPS outbound REST만 사용한다. Agent가 desired state를 poll하�
 
 책임:
 
-- `neul enroll --server <origin>` packaged-client browser approval flow
-- `neul agent enroll --server <url> --pair <token> --connect-once` fallback/debug flow
+- `neul login --server <origin>` packaged-client browser approval enrollment flow
+- `neul up` durable agent running/connected flow
+- `neul agent enroll --server <url> --pair <pair-code> --connect-once` fallback/debug flow
 - `neul init --pair <code>` backward-compatible debug flow
 - `neul agent install` dry-run oriented future install flow
 - `neul agent status`
@@ -333,7 +341,7 @@ macOS LaunchAgent packaging contract:
 - The `.pkg` installs `/usr/local/bin/neul` and
   `/usr/local/libexec/neul-agent`.
 - Package QA may enroll explicitly with
-  `neul agent enroll --server <origin> --pair <token> --connect-once`, then run
+  `neul agent enroll --server <origin> --pair <pair-code> --connect-once`, then run
   `neul agent install`.
 - Legacy/debug compatibility keeps `neul init --pair --server`; it is not the
   primary product command.

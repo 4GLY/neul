@@ -76,6 +76,7 @@ func TestAgentEnroll_connectOnceRequiresFullAgentTick(t *testing.T) {
 		t.Fatalf("stdout leaked token: %s", stdout.String())
 	}
 	assertConfig(t, filepath.Join(configDir, configFileName), "machine_1")
+	assertEnrollStatusMode(t, filepath.Join(configDir, "status.json"), "connect_once")
 }
 
 func TestAgentEnroll_existingConfigRequiresForce(t *testing.T) {
@@ -203,5 +204,27 @@ func assertConfig(t *testing.T, path string, machineID string) {
 	}
 	if config.MachineID != machineID || config.MachineToken != "mtn_secret" {
 		t.Fatalf("config = %+v, want %s and token", config, machineID)
+	}
+}
+
+func assertEnrollStatusMode(t *testing.T, path string, mode string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var status struct {
+		Mode                 string `json:"mode"`
+		LastHeartbeatAttempt string `json:"lastHeartbeatAttempt"`
+		LastHeartbeatAt      string `json:"lastHeartbeatAt"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if status.Mode != mode {
+		t.Fatalf("Mode = %q, want %s", status.Mode, mode)
+	}
+	if status.LastHeartbeatAttempt == "" || status.LastHeartbeatAt == "" {
+		t.Fatalf("status = %+v, want diagnostic attempt and success timestamps", status)
 	}
 }

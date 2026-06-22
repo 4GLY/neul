@@ -44,6 +44,16 @@ func readConfig(path string) (Config, error) {
 	return config, nil
 }
 
+func configExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if os.IsNotExist(err) {
+		return false, nil
+	} else {
+		return false, fmt.Errorf("check config: %w", err)
+	}
+}
+
 func defaultConfigPath() string {
 	return filepath.Join(defaultConfigDir(), configFileName)
 }

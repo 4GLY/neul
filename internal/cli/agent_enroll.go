@@ -66,7 +66,8 @@ func runAgentEnroll(args []string, stdout io.Writer) error {
 	agentConfig.MachineID = config.MachineID
 	agentConfig.MachineToken = config.MachineToken
 	agentConfig.EnablePackageAdapters = true
-	if err := agent.New(agentConfig).Tick(context.Background()); err != nil {
+	statusPath := filepath.Join(filepath.Dir(path), "status.json")
+	if err := agent.New(agentConfig).TickWithStatus(context.Background(), statusPath); err != nil {
 		return fmt.Errorf("connect once: %w", err)
 	}
 	_, err = fmt.Fprintln(stdout, "Connected")

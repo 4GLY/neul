@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 var agentServiceGOOS = runtime.GOOS
+var cliHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -23,6 +25,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	switch args[0] {
 	case "init":
 		return runInit(args[1:], stdout)
+	case "login":
+		return runLogin(args[1:], stdout)
+	case "up":
+		return runUp(args[1:], stdout)
 	case "agent":
 		return runAgent(args[1:], stdout)
 	default:
@@ -116,26 +122,28 @@ type claimResponse struct {
 	MachineToken string `json:"machineToken"`
 }
 
+type machineMetadata struct {
+	Name         string `json:"name"`
+	OS           string `json:"os"`
+	Arch         string `json:"arch"`
+	AgentVersion string `json:"agentVersion"`
+}
+
 func claimPairingCode(serverURL string, pairCode string) (claimResponse, error) {
-	hostname, err := os.Hostname()
-	if err != nil || hostname == "" {
-		hostname = "unknown"
-	}
-	requestBody := map[string]interface{}{
-		"code": pairCode,
-		"machine": map[string]string{
-			"name":         hostname,
-			"os":           runtime.GOOS,
-			"arch":         runtime.GOARCH,
-			"agentVersion": "0.1.0",
-		},
+	machine := currentMachineMetadata()
+	requestBody := struct {
+		Code    string          `json:"code"`
+		Machine machineMetadata `json:"machine"`
+	}{
+		Code:    pairCode,
+		Machine: machine,
 	}
 	encoded, err := json.Marshal(requestBody)
 	if err != nil {
 		return claimResponse{}, fmt.Errorf("encode claim: %w", err)
 	}
 	url := strings.TrimRight(serverURL, "/") + "/api/pair/claim"
-	response, err := http.Post(url, "application/json", bytes.NewReader(encoded))
+	response, err := cliHTTPClient.Post(url, "application/json", bytes.NewReader(encoded))
 	if err != nil {
 		return claimResponse{}, fmt.Errorf("claim pairing code: %w", err)
 	}
@@ -151,6 +159,19 @@ func claimPairingCode(serverURL string, pairCode string) (claimResponse, error) 
 		return claimResponse{}, errors.New("pairing response did not include machine credentials")
 	}
 	return claim, nil
+}
+
+func currentMachineMetadata() machineMetadata {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "unknown"
+	}
+	return machineMetadata{
+		Name:         hostname,
+		OS:           runtime.GOOS,
+		Arch:         runtime.GOARCH,
+		AgentVersion: "0.1.0",
+	}
 }
 
 func decodeClaimError(body io.Reader) error {
@@ -174,4 +195,33 @@ func decodeClaimError(body io.Reader) error {
 		}
 		return fmt.Errorf("pairing claim failed: %s", response.Error.Code)
 	}
+}
+
+type apiError struct {
+	Code       string
+	Message    string
+	StatusCode int
+}
+
+func (e *apiError) Error() string {
+	if e.Message != "" {
+		return e.Code + ": " + e.Message
+	}
+	return e.Code
+}
+
+func decodeAPIError(body io.Reader, statusCode int) error {
+	var response struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		return &apiError{Code: "server_polling_failed", StatusCode: statusCode}
+	}
+	if response.Error.Code == "" {
+		response.Error.Code = "server_polling_failed"
+	}
+	return &apiError{Code: response.Error.Code, Message: response.Error.Message, StatusCode: statusCode}
 }

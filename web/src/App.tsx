@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApprovalPage } from "./ApprovalPage";
 import type { DashboardData } from "./api";
 import { loadDashboardData, OwnerSessionRequiredError } from "./api";
 import { DashboardWorkspace } from "./DashboardWorkspace";
@@ -14,6 +15,13 @@ import type { Machine, MachineStatus } from "./types";
 type LoadState = "loading" | "ready" | "error" | "setup";
 
 export function App(): ReactElement {
+	if (window.location.pathname === "/enroll/approve") {
+		return <ApprovalPage />;
+	}
+	return <DashboardApp />;
+}
+
+function DashboardApp(): ReactElement {
 	const [dashboard, setDashboard] = useState<DashboardData | null>(null);
 	const [loadState, setLoadState] = useState<LoadState>("loading");
 	const [selectedMachineId, setSelectedMachineId] = useState("");

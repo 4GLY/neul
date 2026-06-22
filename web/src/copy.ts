@@ -25,15 +25,16 @@ export const dashboardCopy = {
 	},
 	emptyState: {
 		title: "첫 머신을 등록하세요",
-		body: "packaged neul client에서 등록 명령을 한 번 실행하면 agent 연결을 확인합니다.",
+		body: "packaged neul client에서 로그인한 뒤 neul up으로 agent 연결을 확인합니다.",
 		action: "첫 머신 등록",
 	},
 } as const;
 
 export const onboardingCopy = {
 	title: "머신 등록",
-	intro: "등록 명령을 만든 뒤 새 머신에서 실행하세요.",
-	createInvite: "등록 명령 만들기",
+	intro:
+		"로그인 명령을 만든 뒤 새 머신에서 실행하고, 이어 neul up으로 연결을 확인하세요.",
+	createInvite: "로그인 명령 만들기",
 	commandReady: "명령 실행 대기 중",
 	checkingAgent: "agent 연결 확인 중",
 	agentNotResponding: "agent 응답 없음",
@@ -48,22 +49,35 @@ export const onboardingCopy = {
 		"Linux: Debian/Ubuntu .deb 또는 tarball",
 	],
 	checkoutHint: "Run with packaged neul client:",
-	commandTemplate: "neul enroll --server <origin>",
+	commandTemplate: "neul login --server <origin>",
 	fallbackHint:
 		"packaged approval flow가 준비되기 전에는 fallback/debug 명령으로 등록하세요:",
 	fallbackCommandTemplate:
-		"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
+		"go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once",
 	security: {
-		pairTokenKind: "bearer",
-		neverStorePairTokenIn: [
-			"general URL query strings outside enrollment handoff",
+		pairCodeKind: "one-time /api/pair/claim value",
+		browserExcludedCredentials: [
+			"pair code",
+			"pair token",
+			"machine token",
+			"setup token",
+			"plaintext verifier",
+		],
+		neverStorePairCodeIn: [
+			"browser copy",
+			"URLs",
 			"document.title",
 			"browser history",
+			"localStorage",
+			"logs",
 		],
-		allowedPairTokenHandoffs: [
-			"127.0.0.1 local callback",
-			"neul:// enrollment deep link",
-			"fallback/debug command",
+		browserSafeApprovalHandoffs: [
+			"approval id",
+			"nonce",
+			"comparison code",
+			"machine preview metadata",
+			"CSRF",
+			"status",
 		],
 	},
 } as const;

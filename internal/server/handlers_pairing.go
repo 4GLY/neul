@@ -86,6 +86,16 @@ func handlePairClaim(db *sql.DB, clock func() time.Time) http.HandlerFunc {
 			return
 		}
 
+		approval, approvalLinked, err := approvalForPairingClaim(r, tx, pairing.id)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "approval_lookup_failed", "Could not look up approval metadata.")
+			return
+		}
+		if approvalLinked && !sameMachinePreview(approval.Machine, body.Machine) {
+			writeJSONError(w, http.StatusConflict, "approval_machine_metadata_mismatch", "Machine metadata does not match the approved request.")
+			return
+		}
+
 		machineID := "machine_" + hashSecret(body.Code + body.Machine.Name)[:16]
 		machineToken, err := randomToken("mtn")
 		if err != nil {
@@ -110,6 +120,18 @@ func handlePairClaim(db *sql.DB, clock func() time.Time) http.HandlerFunc {
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "pairing_consume_failed", "Could not consume pairing code.")
 			return
+		}
+		if approvalLinked {
+			err = markApprovalClaimed(r.Context(), tx, approvalClaimedUpdate{
+				ApprovalID:  approval.ID,
+				MachineID:   machineID,
+				ClaimedAt:   now.Format(time.RFC3339Nano),
+				RetainUntil: now.Add(24 * time.Hour).Format(time.RFC3339Nano),
+			})
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "approval_claim_failed", "Could not mark approval claimed.")
+				return
+			}
 		}
 		if err := tx.Commit(); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "transaction_failed", "Could not claim pairing code.")

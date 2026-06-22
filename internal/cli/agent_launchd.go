@@ -15,6 +15,7 @@ const (
 )
 
 var errLaunchdMissingPath = errors.New("launchd path is required")
+var executablePath = os.Executable
 
 type launchdAgentConfig struct {
 	Label           string
@@ -35,11 +36,22 @@ func defaultLaunchdAgentConfig() (launchdAgentConfig, error) {
 	return launchdAgentConfig{
 		Label:           launchdAgentLabel,
 		PlistPath:       plistPath,
-		AgentBinaryPath: defaultLaunchdAgentBinaryPath,
+		AgentBinaryPath: defaultLaunchdAgentBinary(),
 		ConfigPath:      configPath,
 		StatusPath:      filepath.Join(configDir, "status.json"),
 		LogPath:         filepath.Join(configDir, "agent.log"),
 	}, nil
+}
+
+func defaultLaunchdAgentBinary() string {
+	executable, err := executablePath()
+	if err == nil {
+		candidate := filepath.Join(filepath.Dir(filepath.Dir(executable)), "libexec", "neul-agent")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return defaultLaunchdAgentBinaryPath
 }
 
 func defaultLaunchdPlistPath() (string, error) {

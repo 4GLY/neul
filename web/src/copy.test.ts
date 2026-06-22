@@ -25,11 +25,14 @@ describe("Korean-first copy", () => {
 	it("defines the agent onboarding v2 copy contract", () => {
 		expect(copy.dashboard.emptyState).toEqual({
 			title: "첫 머신을 등록하세요",
-			body: "packaged neul client에서 등록 명령을 한 번 실행하면 agent 연결을 확인합니다.",
+			body: "packaged neul client에서 로그인한 뒤 neul up으로 agent 연결을 확인합니다.",
 			action: "첫 머신 등록",
 		});
 		expect(copy.onboarding).toMatchObject({
 			title: "머신 등록",
+			intro:
+				"로그인 명령을 만든 뒤 새 머신에서 실행하고, 이어 neul up으로 연결을 확인하세요.",
+			createInvite: "로그인 명령 만들기",
 			commandReady: "명령 실행 대기 중",
 			checkingAgent: "agent 연결 확인 중",
 			agentNotResponding: "agent 응답 없음",
@@ -44,24 +47,38 @@ describe("Korean-first copy", () => {
 			"Linux: Debian/Ubuntu .deb 또는 tarball",
 		]);
 		expect(copy.onboarding.commandTemplate).toBe(
-			"neul enroll --server <origin>",
+			"neul login --server <origin>",
 		);
 		expect(copy.onboarding.fallbackCommandTemplate).toBe(
-			"go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once",
+			"go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once",
 		);
 	});
 
-	it("documents pair-token handling as a browser leak guardrail", () => {
-		expect(copy.onboarding.security.pairTokenKind).toBe("bearer");
-		expect(copy.onboarding.security.neverStorePairTokenIn).toEqual([
-			"general URL query strings outside enrollment handoff",
+	it("documents pair-code handling as a browser leak guardrail", () => {
+		expect(copy.onboarding.security.pairCodeKind).toContain("/api/pair/claim");
+		expect(copy.onboarding.security.browserExcludedCredentials).toEqual([
+			"pair code",
+			"pair token",
+			"machine token",
+			"setup token",
+			"plaintext verifier",
+		]);
+		expect(copy.onboarding.security.neverStorePairCodeIn).toEqual([
+			"browser copy",
+			"URLs",
 			"document.title",
 			"browser history",
+			"localStorage",
+			"logs",
 		]);
-		expect(copy.onboarding.security.allowedPairTokenHandoffs).toEqual([
-			"127.0.0.1 local callback",
-			"neul:// enrollment deep link",
-			"fallback/debug command",
+		expect(copy.onboarding.security.browserSafeApprovalHandoffs).toEqual([
+			"approval id",
+			"nonce",
+			"comparison code",
+			"machine preview metadata",
+			"CSRF",
+			"status",
 		]);
+		expect(JSON.stringify(copy)).not.toContain("allowedPairTokenHandoffs");
 	});
 });

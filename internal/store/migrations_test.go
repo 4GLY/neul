@@ -65,6 +65,23 @@ func TestMigrationsDoNotCreateSecretTables(t *testing.T) {
 	}
 }
 
+func TestApplyMigrations_whenApprovalMigrationRunsTwice_isIdempotent(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatalf("first ApplyMigrations() error = %v", err)
+	}
+	if err := ApplyMigrations(context.Background(), db); err != nil {
+		t.Fatalf("second ApplyMigrations() error = %v", err)
+	}
+	if !tableExists(t, db, "approval_records") {
+		t.Fatal("table approval_records does not exist")
+	}
+	if !columnExists(t, db, "approval_records", "approval_pairing_id") {
+		t.Fatal("column approval_records.approval_pairing_id does not exist")
+	}
+}
+
 func TestForeignKeysRejectOrphanMachineToken(t *testing.T) {
 	db := openTestDB(t)
 
@@ -141,6 +158,37 @@ func tableExists(t *testing.T, db *sql.DB, table string) bool {
 		t.Fatalf("query sqlite_master error = %v", err)
 	}
 	return count == 1
+}
+
+func columnExists(t *testing.T, db *sql.DB, table string, column string) bool {
+	t.Helper()
+	rows, err := db.QueryContext(context.Background(), `PRAGMA table_info(`+table+`)`)
+	if err != nil {
+		t.Fatalf("query table info error = %v", err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Fatalf("close table info rows error = %v", err)
+		}
+	}()
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("scan table info error = %v", err)
+		}
+		if name == column {
+			return true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate table info error = %v", err)
+	}
+	return false
 }
 
 func seedMachine(t *testing.T, db *sql.DB) {

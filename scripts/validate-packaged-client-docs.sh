@@ -18,6 +18,31 @@ require_text() {
 	fi
 }
 
+require_absent() {
+	ra_file=$1
+	ra_text=$2
+	ra_label=$3
+	if grep -Fq -- "$ra_text" "$ra_file"; then
+		fail "$ra_label: stale '$ra_text' found in $ra_file"
+	fi
+}
+
+require_absent_stale_onboarding_terms() {
+	rasot_file=$1
+	require_absent "$rasot_file" "neul enroll --server" "stale primary enroll command"
+	require_absent "$rasot_file" "neul://enroll?server=" "stale enrollment deep-link URL"
+	require_absent "$rasot_file" "neul://enroll" "stale enrollment deep-link"
+	require_absent "$rasot_file" "enroll?server=" "stale enrollment deep-link query"
+	require_absent "$rasot_file" "local callback" "stale local callback handoff"
+	require_absent "$rasot_file" "callback URL" "stale callback handoff"
+	require_absent "$rasot_file" "callback port" "stale callback handoff"
+	require_absent "$rasot_file" "Device code is fallback-only" "stale device-code fallback decision"
+	require_absent "$rasot_file" "device code" "stale device-code fallback decision"
+	require_absent "$rasot_file" "deep link" "stale deep-link handoff"
+	require_absent "$rasot_file" "deep-link" "stale deep-link handoff"
+	require_absent "$rasot_file" "scheme handler" "stale deep-link scheme handler"
+}
+
 require_executable() {
 	re_file=$1
 	re_label=$2
@@ -60,14 +85,17 @@ packaged_primary_flow() {
 	require_text "docs/mvp.md" "Linux: Debian/Ubuntu .deb와 tarball" "MVP Linux package format"
 	require_text "docs/mvp.md" "/usr/local/bin/neul" "MVP package neul path"
 	require_text "docs/mvp.md" "/usr/local/libexec/neul-agent" "MVP package neul-agent path"
-	require_text "docs/mvp.md" "neul://enroll?server=" "MVP browser deep-link enroll handoff"
-	require_text "docs/mvp.md" "local callback" "MVP local callback approval"
+	require_text "docs/mvp.md" "neul login --server <origin>" "MVP packaged login command"
+	require_text "docs/mvp.md" "browser approval polling" "MVP browser approval polling"
 	require_text "web/src/copy.ts" "macOS local QA: unsigned dev .pkg" "web macOS dev install instruction"
 	require_text "web/src/copy.ts" "Production macOS: Developer ID Application/Installer, notarization, stapling" "web macOS production signing instruction"
 	require_text "web/src/copy.ts" "Linux: Debian/Ubuntu .deb 또는 tarball" "web Linux install instruction"
-	require_text "web/src/copy.ts" "neul enroll --server <origin>" "web target enroll command"
+	require_text "web/src/copy.ts" "neul login --server <origin>" "web target login command"
+	require_text "web/src/OnboardingWizard.tsx" "neul login --server" "web wizard rendered login command"
+	require_text "web/src/onboardingWizard.test.tsx" "neul login --server http://localhost:3000" "web wizard login command assertion"
+	require_text "web/e2e/mvp-flow.ts" "neul login --server" "E2E primary login command assertion"
 	require_text "web/src/copy.ts" "fallback/debug 명령으로 등록하세요" "web fallback/debug instruction"
-	require_text "web/src/onboardingWizard.test.tsx" "not.toContain(\"--pair\")" "web hides pair token in target command"
+	require_text "web/src/onboardingWizard.test.tsx" "not.toContain(\"--pair\")" "web hides pair code in target command"
 	require_text "internal/domain/contracts.md" "Primary packaged client onboarding flow" "contract packaged onboarding heading"
 	require_text "internal/domain/contracts.md" "scripts/build-macos-dev-pkg.sh" "contract macOS dev package builder"
 	require_text "internal/domain/contracts.md" "neul client install" "contract packaged client install"
@@ -75,20 +103,20 @@ packaged_primary_flow() {
 	require_text "internal/domain/contracts.md" "/usr/local/libexec/neul-agent" "contract package neul-agent path"
 	require_text "internal/domain/contracts.md" "Developer ID Application and Developer ID Installer certificates" "contract production signing certificates"
 	require_text "internal/domain/contracts.md" "notarization, and stapling" "contract production notarization limits"
-	require_text "internal/domain/contracts.md" "neul://enroll?server=" "contract browser deep-link handoff"
+	require_text "internal/domain/contracts.md" "POST /api/pair/approval/claim" "contract approval claim polling"
 }
 
 fallback_debug_separation() {
 	require_text "README.md" "### fallback/debug: checkout-local enrollment" "README fallback heading"
 	require_text "docs/qa/agent-onboarding.md" "## Fallback/debug checkout-local enrollment" "QA fallback heading"
-	require_text "web/src/copy.ts" "go run ./cmd/neul agent enroll --server <origin> --pair <token> --connect-once" "web executable fallback command"
+	require_text "web/src/copy.ts" "go run ./cmd/neul agent enroll --server <origin> --pair <pair-code> --connect-once" "web executable fallback command"
 	require_text "web/e2e/mvp-flow.ts" "page.locator(\"code\").nth(1)" "E2E uses visible fallback command"
 	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "MVP primary flow"
 	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "contract primary flow"
 	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "go run ./cmd/neul" "README primary flow"
-	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "MVP primary pair-token command"
-	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "README primary pair-token command"
-	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <token>" "contract primary pair-token command"
+	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <pair-code>" "MVP primary pair-code command"
+	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <pair-code>" "README primary pair-code command"
+	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair <pair-code>" "contract primary pair-code command"
 	require_absent_between "docs/mvp.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "MVP primary pair flag"
 	require_absent_between "README.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "README primary pair flag"
 	require_absent_between "internal/domain/contracts.md" "<!-- packaged-primary:start -->" "<!-- packaged-primary:end -->" "--pair" "contract primary pair flag"
@@ -103,18 +131,40 @@ security_model_guardrails() {
 	require_text "docs/mvp.md" "offline" "MVP offline state"
 	require_text "docs/mvp.md" "error" "MVP error state"
 	require_text "docs/mvp.md" "Self-hosted owner approval model:" "MVP owner approval model"
-	require_text "docs/mvp.md" "Device code is fallback-only" "MVP device code decision"
-	require_text "docs/mvp.md" "allowed pair-token handoffs" "MVP token storage guardrail"
+	require_text "docs/mvp.md" "browser-safe approval handoffs" "MVP browser-safe approval handoffs"
 	require_text "internal/domain/contracts.md" "Self-hosted owner approval model" "contract owner approval model"
-	require_text "internal/domain/contracts.md" "local callback binds to 127.0.0.1 only" "contract local callback bind guardrail"
-	require_text "internal/domain/contracts.md" "Device code is fallback-only" "contract device code decision"
+	require_text "internal/domain/contracts.md" "approval claim is machine-client polling" "contract approval claim polling guardrail"
+	require_text "internal/domain/contracts.md" '`GET /api/pair/poll` is the source of truth only for fallback/debug pair-code expiry' "contract fallback pair poll expiry"
+	require_text "internal/domain/contracts.md" 'Approval expiry uses `GET /api/pair/approval/status`' "contract approval expiry source"
+	require_text "docs/mvp.md" 'durable `neul up` agent-start attempt' "MVP neul up heartbeat timeout anchor"
+	require_text "internal/domain/contracts.md" 'durable `neul up` agent-start attempt' "contract neul up heartbeat timeout anchor"
+	require_absent "docs/mvp.md" "claim 이후 120초" "MVP post-claim heartbeat timeout"
+	require_absent "internal/domain/contracts.md" "claimed machine does not heartbeat within 120 seconds" "contract post-claim heartbeat timeout"
+	require_absent "internal/domain/contracts.md" "Pair poll is the source of truth for onboarding expiry" "contract broad pair poll expiry"
 	require_text "internal/domain/contracts.md" "First-run states" "contract first-run states"
 	require_text "internal/domain/contracts.md" "Pairing browser approval API" "contract browser approval API"
 	require_text "internal/domain/contracts.md" "First-run state mapping" "contract state mapping"
-	require_text "docs/qa/agent-onboarding.md" "Allowed pair-token handoffs" "QA allowed handoff guardrail"
-	require_text "web/src/copy.ts" "allowedPairTokenHandoffs" "web security handoff copy"
-	if grep -Fq "packaged-client command bridge" docs/mvp.md internal/domain/contracts.md web/src/copy.ts; then
-		fail "packaged-client command bridge must not be an allowed pair-token handoff"
+	require_text "docs/qa/agent-onboarding.md" "Browser-safe approval handoffs" "QA browser-safe handoff guardrail"
+	require_text "web/src/copy.ts" "browserSafeApprovalHandoffs" "web approval handoff copy"
+	require_text "docs/qa/agent-onboarding.md" "/api/pair/approval/status" "QA approval expiry source"
+	require_absent "docs/qa/agent-onboarding.md" 'then route `/api/pair/poll`' "QA fallback poll expiry source"
+	require_absent "web/src/OnboardingWizard.tsx" "neul enroll --server" "web wizard stale enroll command"
+	require_absent "web/src/onboardingWizard.test.tsx" "neul enroll --server" "web wizard stale enroll assertion"
+	require_absent "web/e2e/mvp-flow.ts" "neul enroll --server" "E2E stale enroll assertion"
+	require_absent "web/src/OnboardingWizard.tsx" "heartbeatTimeoutMs" "web wizard claim-anchored heartbeat timeout"
+	require_absent "web/src/OnboardingWizard.tsx" "agent_not_responding" "web wizard claim-anchored no-response state"
+	require_absent "web/src/OnboardingWizard.tsx" "120_000" "web wizard claim-anchored timeout literal"
+	require_absent "web/src/onboardingWizard.test.tsx" "heartbeatTimeoutMs" "web wizard test claim-anchored heartbeat timeout"
+	require_absent "web/src/onboardingWizard.test.tsx" "agent_not_responding" "web wizard test claim-anchored no-response state"
+	require_absent "web/src/onboardingWizard.test.tsx" "120_000" "web wizard test claim-anchored timeout literal"
+	for onboarding_contract_file in docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts web/src/copy.test.ts; do
+		require_absent_stale_onboarding_terms "$onboarding_contract_file"
+	done
+	if grep -Fq "packaged-client command bridge" docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts; then
+		fail "packaged-client command bridge must not be a browser-safe approval handoff"
+	fi
+	if grep -Fq "allowedPairTokenHandoffs" docs/mvp.md internal/domain/contracts.md README.md docs/qa/agent-onboarding.md web/src/copy.ts; then
+		fail "allowedPairTokenHandoffs must not remain in docs or web copy"
 	fi
 }
 
