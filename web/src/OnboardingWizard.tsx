@@ -84,6 +84,9 @@ export function OnboardingWizard({
 						onOwnerSessionRequired?.();
 						return;
 					}
+					if (state.kind === "ready") {
+						return;
+					}
 					setState({
 						kind: "error",
 						message:
@@ -99,16 +102,22 @@ export function OnboardingWizard({
 	}, [onOwnerSessionRequired, state]);
 
 	useEffect(() => {
-		if (state.kind !== "claimed_waiting_heartbeat") {
+		if (state.kind !== "ready" && state.kind !== "claimed_waiting_heartbeat") {
 			return;
 		}
 		const intervalId = window.setInterval(() => {
 			void loadDashboardData()
 				.then((dashboard) => {
-					const connected = dashboard.machines.some(
-						(machine) =>
-							machine.id === state.machineId && machine.lastSeen !== "unknown",
-					);
+					const connected = dashboard.machines.some((machine) => {
+						if (machine.lastSeen === "unknown") {
+							return false;
+						}
+						return (
+							state.kind === "ready" ||
+							(state.kind === "claimed_waiting_heartbeat" &&
+								machine.id === state.machineId)
+						);
+					});
 					if (connected) {
 						setState({ kind: "connected" });
 						onConnected();

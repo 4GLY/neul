@@ -80,12 +80,21 @@ describe("OnboardingWizard", () => {
 		expect(document.body.textContent).toContain("agent 연결 확인 중");
 	});
 
+	it("connects when primary login creates a heartbeating machine", async () => {
+		vi.useFakeTimers();
+		const onConnected = vi.fn();
+		stubPrimaryLoginHeartbeat();
+
+		await renderWizard({ onConnected });
+		await advanceTimers(2000);
+
+		expect(onConnected).toHaveBeenCalledTimes(1);
+		expect(document.body.textContent).toContain("머신이 연결되었습니다.");
+	});
+
 	it("shows retry copy when the invite expires", async () => {
 		vi.useFakeTimers();
-		stubFetchSequence([
-			{ code: "pair_123", expiresAt: "2026-06-06T12:10:00Z" },
-			{ status: "expired", expiresAt: "2026-06-06T12:10:00Z" },
-		]);
+		stubExpiredInvite();
 
 		await renderWizard();
 		await advanceTimers(2000);
@@ -128,8 +137,10 @@ describe("OnboardingWizard", () => {
 });
 
 async function renderWizard({
+	onConnected,
 	onOwnerSessionRequired,
 }: {
+	readonly onConnected?: () => void;
 	readonly onOwnerSessionRequired?: () => void;
 } = {}): Promise<void> {
 	const rootElement = document.createElement("div");
@@ -143,9 +154,7 @@ async function renderWizard({
 				onClose={() => {
 					return;
 				}}
-				onConnected={() => {
-					return;
-				}}
+				onConnected={onConnected ?? (() => {})}
 				{...ownerSessionProps}
 			/>,
 		);
@@ -189,6 +198,69 @@ function stubFetchSequence(bodies: readonly unknown[]): {
 		},
 	);
 	return calls;
+}
+
+function stubPrimaryLoginHeartbeat(): void {
+	stubReadyPolls({
+		pair: { status: "pending", expiresAt: "2026-06-06T12:10:00Z" },
+		dashboard: {
+			...emptyDashboard(),
+			machines: [
+				{
+					id: "machine_primary",
+					name: "primary-login",
+					os: "darwin",
+					arch: "arm64",
+					agentVersion: "0.1.0",
+					status: "healthy",
+					lastHeartbeatAt: "2026-06-06T12:01:00Z",
+					driftCount: 0,
+					pendingCount: 0,
+					blockedCount: 0,
+					resourceCount: 0,
+					appliedCount: 0,
+				},
+			],
+		},
+	});
+}
+
+function stubExpiredInvite(): void {
+	stubReadyPolls({
+		pair: { status: "expired", expiresAt: "2026-06-06T12:10:00Z" },
+		dashboard: emptyDashboard(),
+	});
+}
+
+function stubReadyPolls({
+	pair,
+	dashboard,
+}: {
+	readonly pair: unknown;
+	readonly dashboard: unknown;
+}): void {
+	vi.stubGlobal(
+		"fetch",
+		async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = String(input);
+			if (url === "/api/pair/init" && init?.method === "POST") {
+				return jsonResponse({
+					code: "pair_123",
+					expiresAt: "2026-06-06T12:10:00Z",
+				});
+			}
+			if (url.startsWith("/api/pair/poll")) {
+				return jsonResponse(pair);
+			}
+			if (url === "/api/dashboard") {
+				return jsonResponse(dashboard);
+			}
+			if (url === "/api/resources") {
+				return jsonResponse({ resources: [] });
+			}
+			return new Response("not found", { status: 404 });
+		},
+	);
 }
 
 function stubClaimedInviteWithoutHeartbeat(): void {
