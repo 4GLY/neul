@@ -292,7 +292,20 @@ function stubClaimedInviteWithoutHeartbeat(): void {
 	);
 }
 
-function emptyDashboard(): unknown {
+function emptyDashboard(): {
+	readonly metrics: {
+		readonly total: number;
+		readonly healthy: number;
+		readonly drifted: number;
+		readonly pending: number;
+		readonly offline: number;
+		readonly blocked: number;
+		readonly unknown: number;
+	};
+	readonly machines: readonly unknown[];
+	readonly activity: readonly unknown[];
+	readonly ledger: readonly unknown[];
+} {
 	return {
 		metrics: {
 			total: 0,
