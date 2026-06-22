@@ -244,9 +244,10 @@ start_demo() {
 		printf 'server binary already built: %s\n' "$DEMO_BIN"
 	fi
 	NEUL_ADDR="$DEMO_ADDR" \
-		NEUL_DB="$DEMO_DB_ABS" \
-		NEUL_HOME_DIR="$DEMO_HOME_ABS" \
-		NEUL_STATIC_DIR="$DEMO_STATIC_DIR_ABS" \
+	NEUL_DB="$DEMO_DB_ABS" \
+	NEUL_HOME_DIR="$DEMO_HOME_ABS" \
+	NEUL_PUBLIC_ORIGIN="${NEUL_PUBLIC_ORIGIN:-$DEMO_URL}" \
+	NEUL_STATIC_DIR="$DEMO_STATIC_DIR_ABS" \
 		"$DEMO_BIN_ABS" > "$DEMO_LOG" 2>&1 &
 	printf '%s\n' "$!" > "$DEMO_PID"
 	printf '%s\n' "$DEMO_ADDR" > "$DEMO_ADDR_FILE"
