@@ -40,7 +40,8 @@ export function Detail({ id }: { id: number }) {
 	const [actionError, setActionError] = useState("");
 	const [search, setSearch] = useState("");
 	const query = useDeferredValue(search.trim().toLowerCase());
-	const [tab, setTab] = useState<InventoryTab>("brewFormulae");
+	// null until the user picks a tab: default to the first category this machine reports.
+	const [pickedTab, setTab] = useState<InventoryTab | null>(null);
 	async function collect() {
 		setBusy(true);
 		setActionError("");
@@ -82,6 +83,10 @@ export function Detail({ id }: { id: number }) {
 			</>
 		);
 	const facts = machine.facts;
+	const tab =
+		pickedTab ??
+		tabs.find((item) => machine.inventory?.[item.id] != null)?.id ??
+		"brewFormulae";
 	return (
 		<>
 			<a className="back-link" href="#/">
