@@ -38,7 +38,15 @@ cat > "$plist" <<EOF
 </plist>
 EOF
 
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
+domain="gui/$(id -u)"
+launchctl bootout "$domain/$label" 2>/dev/null || true
+# bootout returns before the old job is gone; bootstrapping too early fails with "5: Input/output error".
+i=0
+while launchctl print "$domain/$label" >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -le 50 ] || { echo "timed out waiting for $label to unload" >&2; exit 1; }
+  sleep 0.2
+done
+launchctl bootstrap "$domain" "$plist"
 "$ts" serve --bg --https="$port" "http://127.0.0.1:$port"
 echo "neul hub: launchd $label, https on tailnet port $port, logs $logs/hub.log"
