@@ -39,10 +39,10 @@ const OUTPUT = [
 		actionlint: [{ version: "1.7.7", installed: true, active: false }],
 	}),
 	"@@ files",
-	"file\tabc123\t42\t\t.ssh/config",
-	"symlink\tdef456\t10\trepos/dotfiles/.zshrc\t.zshrc",
-	"missing\t\t\t\t.config/*.toml",
-	"file\t0f0f\t3\t\tdir with\ttab/x",
+	"file\tabc123\t42\t600\t\t.ssh/config",
+	"symlink\tdef456\t10\t644\trepos/dotfiles/.zshrc\t.zshrc",
+	"missing\t\t\t\t\t.config/*.toml",
+	"file\t0f0f\t3\t644\t\tdir with\ttab/x",
 	"bogus\tline",
 	"@@ end",
 ].join("\n");
@@ -142,12 +142,12 @@ describe("toInventory", () => {
 		]);
 	});
 
-	test("files keep tabs inside paths and drop unknown kinds", () => {
-		expect(inv.files?.map((f) => [f.kind, f.path])).toEqual([
-			["missing", ".config/*.toml"],
-			["file", ".ssh/config"],
-			["symlink", ".zshrc"],
-			["file", "dir with\ttab/x"],
+	test("files keep tabs inside paths, carry the mode, and drop unknown kinds", () => {
+		expect(inv.files?.map((f) => [f.kind, f.path, f.mode])).toEqual([
+			["missing", ".config/*.toml", null],
+			["file", ".ssh/config", "600"],
+			["symlink", ".zshrc", "644"],
+			["file", "dir with\ttab/x", "644"],
 		]);
 		expect(inv.files?.find((f) => f.path === ".zshrc")?.linkTarget).toBe(
 			"repos/dotfiles/.zshrc",

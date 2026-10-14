@@ -96,31 +96,33 @@ export function unreachableCondition(
 	};
 }
 
-/** Paths present in both versions whose kind, content, or link target changed. */
+/** Files present in both versions whose kind, content, or link target changed (current side). */
 export function changedFiles(
 	previous: TrackedFile[] | null,
 	current: TrackedFile[] | null,
-): string[] {
+): TrackedFile[] {
 	if (!previous || !current) return [];
 	const before = new Map(previous.map((f) => [f.path, f]));
-	return current
-		.filter((f) => {
-			const old = before.get(f.path);
-			return (
-				old &&
-				(old.kind !== f.kind ||
-					old.sha256 !== f.sha256 ||
-					old.linkTarget !== f.linkTarget)
-			);
-		})
-		.map((f) => f.path);
+	return current.filter((f) => {
+		const old = before.get(f.path);
+		return (
+			old &&
+			(old.kind !== f.kind ||
+				old.sha256 !== f.sha256 ||
+				old.linkTarget !== f.linkTarget)
+		);
+	});
 }
+
+/** Whether a changed file is exactly what desired state asked for, so it is not an incident. */
+export type ExpectedFile = (machineId: number, file: TrackedFile) => boolean;
 
 /** Opens and resolves alerts from collection results and pushes newly opened ones (design.md §8 P2). */
 export class Monitor {
 	constructor(
 		private readonly store: Store,
 		private readonly pusher: Pusher,
+		private readonly expected: ExpectedFile,
 	) {}
 
 	afterRun(
@@ -153,7 +155,9 @@ export class Monitor {
 			const paths = changedFiles(
 				previous?.files ?? null,
 				current?.files ?? null,
-			);
+			)
+				.filter((f) => !this.expected(machine.id, f))
+				.map((f) => f.path);
 			if (paths.length)
 				opened.push(
 					this.store.recordAlertEvent(

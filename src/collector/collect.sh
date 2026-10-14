@@ -138,8 +138,10 @@ if [ "$#" -gt 0 ]; then
   if have sha256sum; then sha() { sha256sum "$1" | cut -d' ' -f1; }
   else sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
   fi
+  # Octal permissions; GNU stat first, since `stat -f` on Linux prints filesystem info and succeeds.
+  fmode() { stat -L -c %a "$1" 2>/dev/null || stat -L -f %Lp "$1" 2>/dev/null; }
   cd "$HOME" || exit 0
-  # One tab-separated line per path: kind, sha256, size, link target, path.
+  # One tab-separated line per path: kind, sha256, size, mode, link target, path.
   IFS='' # glob the pattern but never split it, so paths with spaces survive
   for pattern in "$@"; do
     matched=0
@@ -150,14 +152,14 @@ if [ "$#" -gt 0 ]; then
       kind=file
       if [ -L "$f" ]; then kind=symlink; target=$(readlink "$f"); fi
       if [ -f "$f" ]; then
-        printf '%s\t%s\t%s\t%s\t%s\n' "$kind" "$(sha "$f")" "$(wc -c < "$f" | tr -d ' ')" "$target" "$f"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$(sha "$f")" "$(wc -c < "$f" | tr -d ' ')" "$(fmode "$f")" "$target" "$f"
       elif [ -d "$f" ]; then
-        printf 'dir\t\t\t%s\t%s\n' "$target" "$f"
+        printf 'dir\t\t\t\t%s\t%s\n' "$target" "$f"
       else
-        printf 'broken\t\t\t%s\t%s\n' "$target" "$f"
+        printf 'broken\t\t\t\t%s\t%s\n' "$target" "$f"
       fi
     done
-    [ "$matched" = 1 ] || printf 'missing\t\t\t\t%s\n' "$pattern"
+    [ "$matched" = 1 ] || printf 'missing\t\t\t\t\t%s\n' "$pattern"
   done
 fi
 

@@ -1,17 +1,28 @@
 import type {
 	DesiredCandidate,
 	DesiredCell,
+	DesiredFile,
+	DesiredFileRow,
 	DesiredItem,
 	DesiredManager,
 	DesiredView,
+	FileCandidate,
 	Inventory,
 	MachinePlan,
 	MiseTool,
 	PlanStep,
+	TrackedFile,
 } from "../shared/types.ts";
 import type { MachineRow, Store } from "./db.ts";
 import type { Executor } from "./exec.ts";
 import type { Hub } from "./hub.ts";
+import type { Secrets } from "./secrets.ts";
+
+type PackageStep = Extract<PlanStep, { kind: "package" }>;
+type FileStep = Extract<PlanStep, { kind: "file" }>;
+
+export const sha256Hex = (text: string): string =>
+	new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
 /** mise's default global config; tools requested anywhere else are not "global". */
 const GLOBAL_MISE_CONFIG = "/.config/mise/config.toml";
@@ -123,13 +134,59 @@ export function cellFor(
 		: { status: "drifted", detail: "설치 안 됨" };
 }
 
+/** Why a machine can never apply a file at `path`, or null when it can. */
+export function fileBlockedReason(
+	machine: MachineRow,
+	inventory: Inventory | null,
+	path: string,
+): string | null {
+	if (machine.platform === "windows")
+		return "Windows는 설정 배포 대상이 아닙니다";
+	const tracked = inventory?.files?.find((f) => f.path === path);
+	if (tracked?.kind === "symlink" || tracked?.kind === "broken")
+		return `symlink(→ ${tracked.linkTarget}) — 링크 대상 저장소가 관리하는 경로`;
+	if (tracked?.kind === "dir") return "디렉터리";
+	return null;
+}
+
+export function fileCellFor(
+	file: DesiredFile,
+	machine: MachineRow,
+	inventory: Inventory | null,
+	pending: boolean,
+): DesiredCell {
+	if (pending)
+		return { status: "pending", detail: "적용 중이거나 다시 수집하는 중" };
+	if (machine.platform === "windows")
+		return { status: "blocked", detail: "Windows는 설정 배포 대상이 아닙니다" };
+	if (!inventory)
+		return { status: "unknown", detail: "수집된 인벤토리가 없습니다" };
+	const tracked = inventory.files?.find((f) => f.path === file.path);
+	if (!tracked)
+		return { status: "unknown", detail: "아직 이 경로를 수집하지 않았습니다" };
+	const blocked = fileBlockedReason(machine, inventory, file.path);
+	if (blocked) return { status: "blocked", detail: blocked };
+	if (file.ensure === "absent")
+		return tracked.kind === "missing"
+			? { status: "in_sync", detail: null }
+			: { status: "drifted", detail: "파일이 있음" };
+	if (!file.current) return { status: "blocked", detail: "내용 버전이 없음" };
+	if (tracked.kind === "missing") return { status: "drifted", detail: "없음" };
+	if (tracked.sha256 !== file.current.sha256)
+		return { status: "drifted", detail: "내용 다름" };
+	// Inventories collected before P4 carry no mode; only compare when both are known.
+	if (tracked.mode && tracked.mode !== file.mode)
+		return { status: "drifted", detail: `권한 ${tracked.mode} → ${file.mode}` };
+	return { status: "in_sync", detail: null };
+}
+
 const quote = (value: string) => `'${value.replaceAll("'", `'\\''`)}'`;
 
 /** The shell commands for one group of steps sharing a manager and an action. */
 function commandsFor(
 	manager: DesiredManager,
-	action: PlanStep["action"],
-	steps: PlanStep[],
+	action: PackageStep["action"],
+	steps: PackageStep[],
 ): string[] {
 	const names = steps.map((s) => quote(s.name)).join(" ");
 	switch (manager) {
@@ -166,28 +223,102 @@ const MANAGER_ORDER: DesiredManager[] = [
 ];
 
 /**
- * POSIX script for one machine: removals first, then installs; every command runs even if an
- * earlier one fails, and the exit code is non-zero if any failed.
+ * File helpers, relative to $HOME. Writes go to a temp file in the target directory and are
+ * renamed over the target (atomic), after copying any existing file to `<path>.neul-bak-<ts>`.
+ * Deletes rename the file to the backup name. Symlinks are refused: their targets belong to
+ * another source of truth (e.g. a stow-managed dotfiles repo).
  */
-export function planCommand(steps: PlanStep[]): string {
-	const lines: string[] = [];
-	if (steps.some((s) => s.manager.startsWith("brew_")))
-		lines.push("export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1");
-	lines.push("neul_rc=0");
+const FILE_HELPERS = `neul_ts=$(date -u +%Y%m%dT%H%M%SZ)
+neul_write() { t="$HOME/$1"; d=$(dirname "$t")
+  if [ -L "$t" ]; then echo "neul: $1 is a symlink; not touched" >&2; return 1; fi
+  [ -d "$d" ] || { mkdir -p "$d" && chmod 700 "$d"; } || return 1
+  tmp=$(mktemp "$d/.neul-tmp.XXXXXX") || return 1
+  if base64 -d > "$tmp" && chmod "$2" "$tmp"; then :; else rm -f "$tmp"; return 1; fi
+  if [ -e "$t" ]; then cp -p "$t" "$t.neul-bak-$neul_ts" || { rm -f "$tmp"; return 1; }; fi
+  mv -f "$tmp" "$t"; }
+neul_delete() { t="$HOME/$1"
+  if [ -L "$t" ]; then echo "neul: $1 is a symlink; not touched" >&2; return 1; fi
+  [ -e "$t" ] || return 0
+  mv -f "$t" "$t.neul-bak-$neul_ts"; }`;
+
+/**
+ * POSIX script for one machine: file deletes, package removals, package installs, then file
+ * writes; every step runs even if an earlier one fails, and the exit code is non-zero if any
+ * failed. `display` omits file contents (it is what the user confirms and the run records);
+ * `script` carries them base64-encoded from `contents` (fileId -> plaintext).
+ */
+export function planScript(
+	steps: PlanStep[],
+	contents: Map<number, string>,
+): { display: string; script: string } {
+	const { display, script } = renderPlan(steps, contents);
+	return { display, script: script as string };
+}
+
+/** The confirmable text of a plan, without file contents. */
+export function planDisplay(steps: PlanStep[]): string {
+	return renderPlan(steps, null).display;
+}
+
+function renderPlan(
+	steps: PlanStep[],
+	contents: Map<number, string> | null,
+): { display: string; script: string | null } {
+	const display: string[] = [];
+	const script: string[] = [];
+	const both = (line: string) => {
+		display.push(line);
+		script.push(line);
+	};
+	const packages = steps.filter((s): s is PackageStep => s.kind === "package");
+	const files = steps.filter((s): s is FileStep => s.kind === "file");
+	if (packages.some((s) => s.manager.startsWith("brew_")))
+		both("export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1");
+	if (files.length > 0) both(FILE_HELPERS);
+	both("neul_rc=0");
+	for (const step of files.filter((s) => s.action === "delete")) {
+		both(`printf '%s\\n' ${quote(`$ delete ${step.path}`)}`);
+		both(`neul_delete ${quote(step.path)} || neul_rc=1`);
+	}
 	for (const action of ["remove", "install"] as const) {
 		for (const manager of MANAGER_ORDER) {
-			const group = steps.filter(
+			const group = packages.filter(
 				(s) => s.manager === manager && s.action === action,
 			);
 			if (group.length === 0) continue;
 			for (const command of commandsFor(manager, action, group)) {
-				lines.push(`printf '%s\\n' ${quote(`$ ${command}`)}`);
-				lines.push(`${command} || neul_rc=1`);
+				both(`printf '%s\\n' ${quote(`$ ${command}`)}`);
+				both(`${command} || neul_rc=1`);
 			}
 		}
 	}
-	lines.push("exit $neul_rc");
-	return lines.join("\n");
+	for (const step of files.filter((s) => s.action === "write")) {
+		both(`printf '%s\\n' ${quote(`$ write ${step.path} (${step.mode})`)}`);
+		both(
+			`neul_write ${quote(step.path)} ${step.mode} <<'NEUL_B64' || neul_rc=1`,
+		);
+		display.push(
+			`# content omitted · sha256 ${step.sha256?.slice(0, 12)} · ${step.size} bytes`,
+		);
+		if (contents) {
+			const content = contents.get(step.fileId);
+			if (content === undefined)
+				throw new Error(`no content for file ${step.fileId}`);
+			script.push(Buffer.from(content, "utf8").toString("base64"));
+		}
+		both("NEUL_B64");
+	}
+	both("exit $neul_rc");
+	return {
+		display: display.join("\n"),
+		script: contents ? script.join("\n") : null,
+	};
+}
+
+export class FileVersionChanged extends Error {
+	constructor() {
+		super("파일 버전이 바뀌었습니다");
+	}
 }
 
 /** Desired-state views, plans, and the pending state between an apply and its re-collection. */
@@ -198,6 +329,7 @@ export class Desired {
 		private readonly store: Store,
 		private readonly hub: Hub,
 		private readonly executor: Executor,
+		private readonly secrets: Secrets,
 	) {}
 
 	private pending(): Set<number> {
@@ -240,7 +372,41 @@ export class Desired {
 				}
 				return { ...item, cells };
 			}),
+			files: this.store.listDesiredFiles().map((file): DesiredFileRow => {
+				const cells: Record<number, DesiredCell> = {};
+				for (const id of file.machineIds) {
+					const machine = byId.get(id);
+					if (machine)
+						cells[id] = fileCellFor(
+							file,
+							machine,
+							inventories.get(id) ?? null,
+							pending.has(id),
+						);
+				}
+				return { ...file, cells };
+			}),
 		};
+	}
+
+	/** Every machine's eligibility and current state for a path that may be adopted. */
+	fileCandidates(path: string): FileCandidate[] {
+		const inventories = this.inventories();
+		return this.store.listMachines().map((machine) => {
+			const inventory = inventories.get(machine.id) ?? null;
+			const tracked = inventory?.files?.find((f) => f.path === path);
+			return {
+				machineId: machine.id,
+				machineName: machine.name,
+				blocked:
+					fileBlockedReason(machine, inventory, path) ??
+					(inventory ? null : "아직 수집되지 않았습니다"),
+				kind: tracked?.kind ?? null,
+				sha256: tracked?.sha256 ?? null,
+				mode: tracked?.mode ?? null,
+				linkTarget: tracked?.linkTarget ?? null,
+			};
+		});
 	}
 
 	/** Every machine's eligibility and current state for an item that may be adopted. */
@@ -268,26 +434,83 @@ export class Desired {
 		const view = this.view();
 		const names = new Map(view.machines.map((m) => [m.id, m.name]));
 		const steps = new Map<number, PlanStep[]>();
+		const add = (id: string, step: PlanStep) => {
+			const list = steps.get(Number(id)) ?? [];
+			list.push(step);
+			steps.set(Number(id), list);
+		};
 		for (const item of view.items) {
 			for (const [id, cell] of Object.entries(item.cells)) {
 				if (cell.status !== "drifted") continue;
-				const list = steps.get(Number(id)) ?? [];
-				list.push({
+				add(id, {
+					kind: "package",
 					itemId: item.id,
 					manager: item.manager,
 					name: item.name,
 					version: item.version,
 					action: item.ensure === "present" ? "install" : "remove",
 				});
-				steps.set(Number(id), list);
+			}
+		}
+		for (const file of view.files) {
+			for (const [id, cell] of Object.entries(file.cells)) {
+				if (cell.status !== "drifted") continue;
+				const write = file.ensure === "present";
+				add(id, {
+					kind: "file",
+					fileId: file.id,
+					path: file.path,
+					action: write ? "write" : "delete",
+					mode: file.mode,
+					sha256: write ? (file.current?.sha256 ?? null) : null,
+					size: write ? (file.current?.size ?? null) : null,
+					secret: file.secret,
+				});
 			}
 		}
 		return [...steps].map(([machineId, list]) => ({
 			machineId,
 			machineName: names.get(machineId) ?? String(machineId),
 			steps: list,
-			command: planCommand(list),
+			command: planDisplay(list),
 		}));
+	}
+
+	/**
+	 * The script that carries out a confirmed plan, with the current content of every written
+	 * file (secrets decrypted here). Throws FileVersionChanged when a file's current version no
+	 * longer matches the version the plan was shown with.
+	 */
+	async scriptFor(plan: MachinePlan): Promise<string> {
+		const contents = new Map<number, string>();
+		for (const step of plan.steps) {
+			if (step.kind !== "file" || step.action !== "write") continue;
+			const current = this.store.getDesiredFile(step.fileId)?.current;
+			const version =
+				current &&
+				this.store.getDesiredFileVersionContent(step.fileId, current.versionId);
+			if (!version) throw new FileVersionChanged();
+			const content =
+				version.content ??
+				(version.contentAge === null
+					? null
+					: await this.secrets.decrypt(version.contentAge));
+			if (content === null || sha256Hex(content) !== step.sha256)
+				throw new FileVersionChanged();
+			contents.set(step.fileId, content);
+		}
+		return planScript(plan.steps, contents).script;
+	}
+
+	/** Whether a collected file is exactly what a desired file on that machine asks for. */
+	matchesDesiredFile(machineId: number, file: TrackedFile): boolean {
+		const desired = this.store
+			.listDesiredFiles()
+			.find((f) => f.path === file.path && f.machineIds.includes(machineId));
+		if (!desired) return false;
+		return desired.ensure === "absent"
+			? file.kind === "missing"
+			: file.kind === "file" && file.sha256 === desired.current?.sha256;
 	}
 
 	/** After an apply target finishes, re-collect so the state reflects the change. */

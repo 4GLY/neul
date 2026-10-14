@@ -5,6 +5,8 @@ import type {
 	Alert,
 	AlertRule,
 	DesiredEnsure,
+	DesiredFile,
+	DesiredFileVersion,
 	DesiredItem,
 	DesiredManager,
 	ExecChunk,
@@ -113,6 +115,31 @@ CREATE TABLE IF NOT EXISTS desired_targets (
   item_id INTEGER NOT NULL REFERENCES desired_items ON DELETE CASCADE,
   machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
   PRIMARY KEY (item_id, machine_id)
+);
+CREATE TABLE IF NOT EXISTS desired_files (
+  id INTEGER PRIMARY KEY,
+  path TEXT UNIQUE NOT NULL,
+  ensure TEXT NOT NULL CHECK (ensure IN ('present','absent')),
+  mode TEXT NOT NULL,
+  secret INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS desired_file_versions (
+  id INTEGER PRIMARY KEY,
+  file_id INTEGER NOT NULL REFERENCES desired_files ON DELETE CASCADE,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  content TEXT,      -- plaintext; NULL for secret files
+  content_age TEXT,  -- armored age ciphertext; NULL for non-secret files
+  source TEXT NOT NULL, -- 'adopt:<machine name>' | 'edit' | 'revert:<version id>'
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS desired_file_versions_file ON desired_file_versions (file_id, id);
+CREATE TABLE IF NOT EXISTS desired_file_targets (
+  file_id INTEGER NOT NULL REFERENCES desired_files ON DELETE CASCADE,
+  machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
+  PRIMARY KEY (file_id, machine_id)
 );
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY,
@@ -356,6 +383,70 @@ function toDesiredItem(row: DesiredItemRow, machineIds: number[]): DesiredItem {
 		machineIds,
 		createdAt: row.created_at,
 	};
+}
+
+interface DesiredFileRow {
+	id: number;
+	path: string;
+	ensure: DesiredEnsure;
+	mode: string;
+	secret: number;
+	created_at: string;
+	version_id: number | null;
+	sha256: string | null;
+	size: number | null;
+	version_created_at: string | null;
+}
+
+/** Each file with its newest (current) version, if any. */
+const DESIRED_FILE_SELECT = `SELECT f.*, v.id AS version_id, v.sha256, v.size, v.created_at AS version_created_at
+FROM desired_files f
+LEFT JOIN desired_file_versions v ON v.id = (SELECT MAX(id) FROM desired_file_versions WHERE file_id = f.id)`;
+
+function toDesiredFile(row: DesiredFileRow, machineIds: number[]): DesiredFile {
+	return {
+		id: row.id,
+		path: row.path,
+		ensure: row.ensure,
+		mode: row.mode,
+		secret: row.secret === 1,
+		machineIds,
+		createdAt: row.created_at,
+		current:
+			row.version_id === null
+				? null
+				: {
+						versionId: row.version_id,
+						sha256: row.sha256 as string,
+						size: row.size as number,
+						createdAt: row.version_created_at as string,
+					},
+	};
+}
+
+interface DesiredFileVersionRow {
+	id: number;
+	sha256: string;
+	size: number;
+	source: string;
+	created_at: string;
+	created_by: string;
+}
+
+export interface NewFileVersion {
+	sha256: string;
+	size: number;
+	content: string | null; // plaintext; null for secret files
+	contentAge: string | null; // armored age ciphertext; null for non-secret files
+	source: string;
+	createdBy: string;
+}
+
+export interface FileVersionContent {
+	content: string | null;
+	contentAge: string | null;
+	sha256: string;
+	size: number;
 }
 
 export class Store {
@@ -1008,4 +1099,157 @@ export class Store {
 	deleteDesired(id: number): void {
 		this.db.query("DELETE FROM desired_items WHERE id = ?").run(id);
 	}
+
+	listDesiredFiles(): DesiredFile[] {
+		const targets = new Map<number, number[]>();
+		for (const t of this.db
+			.query<{ file_id: number; machine_id: number }, []>(
+				"SELECT file_id, machine_id FROM desired_file_targets ORDER BY machine_id",
+			)
+			.all()) {
+			const list = targets.get(t.file_id) ?? [];
+			list.push(t.machine_id);
+			targets.set(t.file_id, list);
+		}
+		return this.db
+			.query<DesiredFileRow, []>(`${DESIRED_FILE_SELECT} ORDER BY f.path`)
+			.all()
+			.map((row) => toDesiredFile(row, targets.get(row.id) ?? []));
+	}
+
+	getDesiredFile(id: number): DesiredFile | null {
+		const row = this.db
+			.query<DesiredFileRow, [number]>(`${DESIRED_FILE_SELECT} WHERE f.id = ?`)
+			.get(id);
+		if (!row) return null;
+		const machineIds = this.db
+			.query<{ machine_id: number }, [number]>(
+				"SELECT machine_id FROM desired_file_targets WHERE file_id = ? ORDER BY machine_id",
+			)
+			.all(id)
+			.map((t) => t.machine_id);
+		return toDesiredFile(row, machineIds);
+	}
+
+	/** The file, its targets and its first version (if any) in one transaction. */
+	createDesiredFile(
+		file: {
+			path: string;
+			ensure: DesiredEnsure;
+			mode: string;
+			secret: boolean;
+			machineIds: number[];
+		},
+		version: NewFileVersion | null,
+	): DesiredFile {
+		const id = this.db.transaction(() => {
+			const row = this.db
+				.query<{ id: number }, [string, DesiredEnsure, string, number, string]>(
+					"INSERT INTO desired_files (path, ensure, mode, secret, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+				)
+				.get(
+					file.path,
+					file.ensure,
+					file.mode,
+					file.secret ? 1 : 0,
+					new Date().toISOString(),
+				);
+			if (!row) throw new Error("desired file insert returned no row");
+			this.setDesiredFileTargets(row.id, file.machineIds);
+			if (version) this.addDesiredFileVersion(row.id, version);
+			return row.id;
+		})();
+		const created = this.getDesiredFile(id);
+		if (!created) throw new Error("desired file vanished after insert");
+		return created;
+	}
+
+	addDesiredFileVersion(fileId: number, v: NewFileVersion): DesiredFileVersion {
+		const row = this.db
+			.query<
+				DesiredFileVersionRow,
+				[
+					number,
+					string,
+					number,
+					string | null,
+					string | null,
+					string,
+					string,
+					string,
+				]
+			>(
+				"INSERT INTO desired_file_versions (file_id, sha256, size, content, content_age, source, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, sha256, size, source, created_at, created_by",
+			)
+			.get(
+				fileId,
+				v.sha256,
+				v.size,
+				v.content,
+				v.contentAge,
+				v.source,
+				new Date().toISOString(),
+				v.createdBy,
+			);
+		if (!row) throw new Error("desired file version insert returned no row");
+		return toFileVersion(row);
+	}
+
+	/** Newest first. */
+	listDesiredFileVersions(fileId: number): DesiredFileVersion[] {
+		return this.db
+			.query<DesiredFileVersionRow, [number]>(
+				"SELECT id, sha256, size, source, created_at, created_by FROM desired_file_versions WHERE file_id = ? ORDER BY id DESC",
+			)
+			.all(fileId)
+			.map(toFileVersion);
+	}
+
+	getDesiredFileVersionContent(
+		fileId: number,
+		versionId: number,
+	): FileVersionContent | null {
+		return this.db
+			.query<FileVersionContent, [number, number]>(
+				"SELECT content, content_age AS contentAge, sha256, size FROM desired_file_versions WHERE file_id = ? AND id = ?",
+			)
+			.get(fileId, versionId);
+	}
+
+	updateDesiredFile(
+		id: number,
+		patch: { ensure: DesiredEnsure; mode: string; machineIds: number[] },
+	): void {
+		this.db.transaction(() => {
+			this.db
+				.query("UPDATE desired_files SET ensure = ?, mode = ? WHERE id = ?")
+				.run(patch.ensure, patch.mode, id);
+			this.setDesiredFileTargets(id, patch.machineIds);
+		})();
+	}
+
+	private setDesiredFileTargets(fileId: number, machineIds: number[]): void {
+		this.db
+			.query("DELETE FROM desired_file_targets WHERE file_id = ?")
+			.run(fileId);
+		const insert = this.db.query(
+			"INSERT INTO desired_file_targets (file_id, machine_id) VALUES (?, ?)",
+		);
+		for (const machineId of machineIds) insert.run(fileId, machineId);
+	}
+
+	deleteDesiredFile(id: number): void {
+		this.db.query("DELETE FROM desired_files WHERE id = ?").run(id);
+	}
+}
+
+function toFileVersion(row: DesiredFileVersionRow): DesiredFileVersion {
+	return {
+		id: row.id,
+		sha256: row.sha256,
+		size: row.size,
+		source: row.source,
+		createdAt: row.created_at,
+		createdBy: row.created_by,
+	};
 }

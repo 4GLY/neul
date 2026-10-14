@@ -204,7 +204,7 @@ describe("changedFiles", () => {
 					file(".npmrc", "c"),
 					file(".new", "d"),
 				],
-			),
+			).map((f) => f.path),
 		).toEqual([".zshrc", ".npmrc"]);
 	});
 });

@@ -3,7 +3,7 @@
 > **늘**: 내 개발 머신들을 한 곳에서 보고, 맞추고, 실행하고, 지켜본다.
 
 - 작성: 2026-10-14
-- 상태: P0–P2 배포, P3 구현
+- 상태: P0–P3 배포, P4 구현
 - 이전 버전: `archive/v1` 태그 (Go server/agent + React, 2026-05~07)
 
 ## 1. v1에서 배운 것
@@ -92,7 +92,7 @@ flowchart LR
 | `pacman_count` | 전체 패키지 수 | pacman 있을 때 |
 | `pacman_sudo` | `yes`·`no`. `sudo -n /usr/bin/pacman -V`가 되는지(허브가 pacman 변경을 적용할 수 있는지) | pacman 있을 때 |
 | `mise_json` | `mise ls --json` 원문 | mise 있을 때 |
-| `files` | 탭 구분 `kind sha256 size link_target path`. kind는 `file`·`symlink`·`dir`·`broken`·`missing` | posix |
+| `files` | 탭 구분 `kind sha256 size mode link_target path`. kind는 `file`·`symlink`·`dir`·`broken`·`missing`, mode는 8진수 권한(`stat -L`, GNU `-c %a` 먼저, BSD `-f %Lp`; 파일·파일을 가리키는 symlink만) | posix |
 | `brew_outdated` | `brew outdated --quiet` 이름 한 줄씩. 마지막 `brew update` 시점의 메타데이터 기준(`HOMEBREW_NO_AUTO_UPDATE`) | brew 있을 때 |
 | `pacman_updates` | `checkupdates` 이름 한 줄씩(임시 DB 동기화, 시스템 DB는 그대로). 실패하면 섹션 없음 = 알 수 없음 | `checkupdates` 있을 때 |
 | `repos` | 탭 구분 `state dirty ahead path`. state는 `ok`·`missing`, dirty는 `git status --porcelain` 줄 수, ahead는 upstream보다 앞선 커밋 수(upstream 없으면 빈 값). `GIT_OPTIONAL_LOCKS=0` | posix, 저장소 설정 시 |
@@ -178,6 +178,24 @@ desired_items(
 
 desired_targets(item_id → desired_items CASCADE, machine_id → machines CASCADE,
   PRIMARY KEY (item_id, machine_id))
+
+-- P4 파일·키 desired state
+desired_files(
+  id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,  -- $HOME 기준
+  ensure TEXT NOT NULL CHECK (ensure IN ('present','absent')),
+  mode TEXT NOT NULL, secret INTEGER NOT NULL DEFAULT 0,  -- secret은 만든 뒤 바꿀 수 없다
+  created_at TEXT NOT NULL)
+
+desired_file_versions(  -- 현재 버전 = 그 파일의 MAX(id). 되돌리기도 새 버전
+  id INTEGER PRIMARY KEY, file_id → desired_files CASCADE,
+  sha256 TEXT NOT NULL, size INTEGER NOT NULL,
+  content TEXT,      -- 평문, 시크릿이면 NULL
+  content_age TEXT,  -- armored age 암호문, 시크릿이 아니면 NULL
+  source TEXT NOT NULL,  -- 'adopt:<머신>' | 'edit' | 'revert:<버전 id>'
+  created_at TEXT NOT NULL, created_by TEXT NOT NULL)
+
+desired_file_targets(file_id → desired_files CASCADE, machine_id → machines CASCADE,
+  PRIMARY KEY (file_id, machine_id))
 ```
 
 설정 키: `trackedPaths`(string[]), `collectIntervalMin`(number, 기본 10), `alertRules`(`{ unreachableMin, diskPercent, updatesCount }`는 숫자 또는 null=끔, 기본 30·90·20, `trackedFiles`(기본 true), `repos`(string[])). `vapidKeys`도 settings 테이블에 있지만 `GET /api/settings`로는 나가지 않는다.
@@ -213,15 +231,22 @@ desired_targets(item_id → desired_items CASCADE, machine_id → machines CASCA
 | `POST /api/desired` | `DesiredInput`. 대상은 수집된 적 있고 그 관리자를 적용할 수 있는 머신만(아니면 400). 같은 (manager, name)은 하나 |
 | `PATCH /api/desired/:id`, `DELETE /api/desired/:id` | 버전·ensure·대상 변경, 관리 해제(머신의 패키지는 그대로) |
 | `GET /api/desired/candidates?manager=&name=` | 채택 전 머신별 적용 가능 여부·현재 상태 |
-| `GET /api/desired/plan` | `MachinePlan[]`: drift가 있는 머신마다 단계와 실행할 스크립트 원문 |
-| `POST /api/desired/apply` | `{ plans: [{ machineId, command }] }`. 지금 계획과 스크립트가 다르면 409. apply 실행 run을 시작해 `{ id }` |
+| `GET /api/desired/plan` | `MachinePlan[]`: drift가 있는 머신마다 단계와 확인용 스크립트 원문(파일 내용은 sha256·크기 주석으로 대신) |
+| `POST /api/desired/apply` | `{ plans: [{ machineId, command }] }`. 지금 계획과 스크립트가 다르거나 파일 버전이 바뀌었으면 409. apply 실행 run을 시작해 `{ id }` |
+| `GET /api/desired/file-candidates?path=` | `FileCandidate[]`: 채택 전 머신별 kind·sha256·mode·링크 대상과 적용 가능 여부 |
+| `POST /api/desired/files` | `DesiredFileInput`. present면 원본(머신에서 읽기 또는 직접 입력, 256 KiB·UTF-8)이 필요하다. 경로를 추적 경로에 넣고, 그 경로를 아직 수집하지 않은 대상은 먼저 수집한다. symlink·디렉터리인 대상은 400 |
+| `GET /api/desired/files/:id` | `DesiredFileDetail`: 버전 목록과 현재 내용(시크릿이면 `null`) |
+| `PATCH /api/desired/files/:id`, `DELETE /api/desired/files/:id` | ensure·mode·대상 변경, 관리 해제(머신의 파일은 그대로) |
+| `POST /api/desired/files/:id/versions` | `{ content }` 또는 `{ fromVersionId }`로 새 버전. 내용이 현재 버전과 같으면 만들지 않는다 |
+| `GET /api/desired/files/:id/versions/:versionId` | `{ content }`. 시크릿이면 `null` — 시크릿 평문을 돌려주는 API는 없다 |
+| `POST /api/desired/export` | desired state 전체를 허브 로컬 git 저장소에 쓰고 바뀌었으면 커밋. `{ dir, commit, files }` (`commit`은 변경이 없으면 `null`) |
 
 ## 7. 화면
 
 - **머신 목록**: 상태, OS, uptime, 부하, 메모리·디스크 사용률, 배터리, 패키지 수, 마지막 수집 시각. "전체 수집", "머신 추가".
 - **머신 상세**: facts(업데이트 대기 수, 감시 저장소 상태 포함), 최근 실행 기록(오류 메시지 포함), brew formula/cask(직접 설치 여부 표시), pacman, mise 도구(활성 버전), 추적 파일 해시. 검색 필터. 편집에서 "연결 끊김 알림" 토글.
-- **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본. 패키지 행마다 "채택"(의존성으로만 설치된 formula 제외) 또는 "관리 중".
-- **맞추기**(`#/desired`): 계획(머신별 설치·제거 목록, 스크립트 원문, 적용할 머신 선택 → 확인 → 적용), 관리 항목 × 머신 상태 행렬, 편집·해제, 이름으로 직접 추가. 채택·편집 대화상자는 적용할 수 없는 머신을 고를 수 없게 보여 준다. 머신 상세 인벤토리에도 "채택".
+- **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본. 패키지·파일 행마다 "채택"(의존성으로만 설치된 formula 제외) 또는 "관리 중".
+- **맞추기**(`#/desired`): 계획(머신별 설치·제거·파일 쓰기·삭제 목록, 스크립트 원문, 적용할 머신 선택 → 확인 → 적용), 관리 항목·파일 × 머신 상태 행렬, 편집·해제, 이름·경로로 직접 추가, "git으로 내보내기". 채택·편집 대화상자는 적용할 수 없는 머신을 고를 수 없게 보여 준다. 파일 대화상자는 원본(머신 또는 직접 입력)·시크릿·권한을 고르고, 기존 파일은 내용 편집(시크릿은 새 내용 입력만)·버전 목록·되돌리기를 한다. 머신 상세 인벤토리에도 "채택".
 - **설정**: 추적 경로 패턴, 수집 주기, 알림 규칙(임계값·끄기, 감시 저장소), 이 기기의 푸시 구독·테스트 알림.
 - **알림**(`#/alerts`): 열린 알림과 지난 알림. 헤더 메뉴에 열린 알림 수.
 - **원격 실행**(`#/exec`): 대상 머신 선택, 명령·제한 시간 입력 → 확인 단계(대상과 명령 원문)를 거쳐 실행. 저장된 명령(불러오기·저장·덮어쓰기·삭제), 실행 기록.
@@ -246,7 +271,7 @@ desired_targets(item_id → desired_items CASCADE, machine_id → machines CASCA
 
 구현:
 
-- 명령은 stdin으로 보낸다. posix는 `ssh <alias> sh -s`(local은 `sh -s`)에 래퍼 스크립트를 보낸다. 래퍼는 수집 스크립트와 같은 PATH 보강을 하고, 명령을 별도 프로세스 그룹에서 `sh -c`로 실행한다(명령의 stdin은 `/dev/null`). 허브는 stdin을 열어 두고, 래퍼의 감시 프로세스는 stdin EOF를 받으면 그 프로세스 그룹을 kill한다. 취소·시간 초과·허브 종료 때 stdin이 닫히면 원격 프로세스도 함께 끝난다. 5초 안에 끝나지 않으면 로컬 `ssh`를 SIGKILL한다.
+- 명령은 stdin으로 보낸다. posix는 `ssh <alias> sh -s`(local은 `sh -s`)에 래퍼 스크립트를 보낸다. 래퍼는 수집 스크립트와 같은 PATH 보강을 하고, 명령을 `umask 077`로 만든 임시 파일(`mktemp`)에 써서 별도 프로세스 그룹에서 `sh <임시 파일>`로 실행한다(명령의 stdin은 `/dev/null`, 끝나면 파일 삭제). 명령 원문은 원격 `ps`에 보이지 않는다. 허브는 stdin을 열어 두고, 래퍼의 감시 프로세스는 stdin EOF를 받으면 그 프로세스 그룹을 kill한다. 취소·시간 초과·허브 종료 때 stdin이 닫히면 원격 프로세스도 함께 끝난다. 5초 안에 끝나지 않으면 로컬 `ssh`를 SIGKILL한다.
 - windows는 `powershell -NoProfile -NonInteractive -Command -`에 `[Console]::OutputEncoding`을 UTF-8로 맞춘 뒤 명령을 보내고 stdin을 닫는다. 취소하면 로컬 `ssh`를 SIGKILL한다(원격 정리 미검증).
 - 결과: 종료 코드 0 → `ok`, ssh 255 → `unreachable`, 그 밖 → `failed`. 제한 시간(기본 300초, 최대 3600초) 초과 → `timeout`, 사용자 취소 → `canceled`. 같은 머신에서는 한 번에 하나만 실행한다.
 - 출력은 대상별로 stdout·stderr 합쳐 1 MiB까지만 남기고 넘으면 `truncated`. 실행 중 출력은 메모리에 두고 대상이 끝날 때 저장한다. 허브가 시작할 때 `running`으로 남은 대상은 `interrupted`로 마감한다(그 출력은 남지 않는다).
@@ -288,7 +313,18 @@ desired_targets(item_id → desired_items CASCADE, machine_id → machines CASCA
 - 키·시크릿 내용은 허브 DB에 age로 암호화해 저장한다(허브 로컬 키).
 - desired state 전체를 git 저장소로 내보낼 수 있다(백업·이력용).
 
+구현:
+
+- 판정(경로별, 위에서 처음 맞는 것): Windows → `blocked`, inventory 없음·경로 미수집 → `unknown`, symlink·broken·디렉터리 → `blocked`, absent는 `missing`이면 `in_sync` 아니면 `drifted`, present는 없음·sha256 다름·권한 다름(수집된 mode가 있을 때만) → `drifted`.
+- **symlink 경로는 적용 대상이 될 수 없다.** Mac의 dotfile 대부분은 `repos/dotfiles`(stow)의 symlink라, 링크 대상에 쓰면 git 작업 트리와 허브 DB가 같은 파일의 원본을 다툰다. 원본으로 채택하는 것은 된다(머신에서 읽을 때 링크를 따라간다). 그래서 stow 파일은 git이 맡고, neul은 그 내용을 stow 없는 머신(nimarchy)과 키 파일에 배포한다.
+- 채택은 원본 머신에서 `$HOME/<path>`를 base64로 읽는다(일반 파일, 256 KiB 이하, UTF-8 텍스트만). 경로는 `$HOME` 기준 상대 경로 하나(glob·`.`·`..` 불가)이고, 추적 경로에 없으면 추가한다.
+- 시크릿은 사용자가 정한다(기본 추천: `.ssh/` 아래에서 `config*`·`*.pub`·`known_hosts`·`authorized_keys` 제외). 내용은 `age-encryption`으로 허브 identity(`age-identity.txt`, DB 옆, 처음 쓸 때 600으로 생성)에 암호화해 저장한다. identity는 DB·내보내기에 넣지 않고 백업하지 않는다. 잃으면 시크릿 버전은 다시 채택해야 한다.
+- 적용 스크립트(머신마다): 파일 삭제 → 패키지 제거 → 패키지 설치 → 파일 쓰기. 쓰기는 대상 디렉터리의 임시 파일에 base64로 풀고 `chmod` 뒤, 기존 파일을 `cp -p`로 `<path>.neul-bak-<UTC 시각>`에 백업하고 `mv`로 바꾼다. 없는 디렉터리는 700으로 만든다. 삭제는 백업 이름으로 `mv`. 대상이 symlink면 건드리지 않고 실패한다. 백업은 정리하지 않는다.
+- 확인하는 스크립트(`MachinePlan.command`, 실행 기록에 남는 것)에는 파일 내용 대신 sha256·크기 주석이 들어간다. 실제 실행 스크립트는 적용할 때 현재 버전 내용(시크릿은 복호화)으로 만들고, 그 sha256이 계획과 다르면 409. 실행 스크립트는 저장하지 않는다.
+- 허브가 적용해서 desired와 정확히 같아진 파일 변경(present는 같은 sha256, absent는 `missing`)은 추적 파일 변경 알림에서 뺀다.
+- 내보내기: `NEUL_EXPORT_DIR`(기본 DB 옆 `export/`)의 git 저장소에 `packages.json`, `files.json`, `files/<path>`(시크릿은 저장된 암호문 그대로 `files/<path>.age`)를 쓰고 바뀌었으면 커밋한다. push는 하지 않는다.
+
 ## 9. 운영
 
-- 실행: `bun run start` (`NODE_ENV=production`). 포트 `NEUL_PORT`(기본 7430), DB `NEUL_DB`(기본 `~/.local/share/neul/neul.db`).
+- 실행: `bun run start` (`NODE_ENV=production`). 포트 `NEUL_PORT`(기본 7430), DB `NEUL_DB`(기본 `~/.local/share/neul/neul.db`). 시크릿 identity `NEUL_AGE_IDENTITY`(기본 DB 옆 `age-identity.txt`), 내보내기 저장소 `NEUL_EXPORT_DIR`(기본 DB 옆 `export/`).
 - 상주·공개: 허브 머신의 개발 저장소에서 `deploy/update-hub.sh <tailscale-login>` 실행. `origin/main`을 별도 worktree `~/.local/share/neul/hub`에 받고(`deploy/install-launchagent.sh` 호출) LaunchAgent `dev.neul.hub`로 띄운 뒤 `tailscale serve --bg --https=7430 http://127.0.0.1:7430`으로 tailnet에 공개한다. 로그는 `~/Library/Logs/neul/hub.log`.

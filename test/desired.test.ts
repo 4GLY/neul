@@ -1,11 +1,31 @@
 import { describe, expect, test } from "bun:test";
+import {
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type MachineRow, Store } from "../src/server/db.ts";
-import { cellFor, planCommand } from "../src/server/desired.ts";
+import {
+	cellFor,
+	fileCellFor,
+	planScript,
+	sha256Hex,
+} from "../src/server/desired.ts";
 import type {
+	DesiredFile,
 	DesiredItem,
 	Inventory,
 	MiseTool,
 	PlanStep,
+	TrackedFile,
 } from "../src/shared/types.ts";
 
 const GLOBAL = "/home/u/.config/mise/config.toml";
@@ -117,9 +137,77 @@ describe("cellFor", () => {
 	});
 });
 
-describe("planCommand", () => {
-	const steps: PlanStep[] = [
+describe("fileCellFor", () => {
+	const file = (patch: Partial<DesiredFile> = {}): DesiredFile => ({
+		id: 1,
+		path: ".zshrc",
+		ensure: "present",
+		mode: "644",
+		secret: false,
+		machineIds: [1],
+		createdAt: "2026-10-14T00:00:00.000Z",
+		current: {
+			versionId: 1,
+			sha256: "aaa",
+			size: 3,
+			createdAt: "2026-10-14T00:00:00.000Z",
+		},
+		...patch,
+	});
+	const tracked = (patch: Partial<TrackedFile>): Inventory =>
+		inventory({
+			files: [
+				{
+					path: ".zshrc",
+					kind: "file",
+					sha256: "aaa",
+					size: 3,
+					mode: "644",
+					linkTarget: null,
+					...patch,
+				},
+			],
+		});
+
+	test("never applies through a symlink", () => {
+		const cell = fileCellFor(
+			file(),
+			machine(),
+			tracked({ kind: "symlink", linkTarget: "repos/dotfiles/.zshrc" }),
+			false,
+		);
+		expect(cell.status).toBe("blocked");
+		expect(cell.detail).toContain("repos/dotfiles/.zshrc");
+	});
+
+	test("absent is in sync only when the file is missing", () => {
+		const absent = file({ ensure: "absent", current: null });
+		const missing = tracked({ kind: "missing", sha256: null, mode: null });
+		expect(fileCellFor(absent, machine(), missing, false).status).toBe(
+			"in_sync",
+		);
+		expect(fileCellFor(absent, machine(), tracked({}), false).status).toBe(
+			"drifted",
+		);
+	});
+
+	test("content and mode differences drift; unknown mode is not compared", () => {
+		expect(
+			fileCellFor(file(), machine(), tracked({ sha256: "bbb" }), false),
+		).toEqual({ status: "drifted", detail: "내용 다름" });
+		expect(
+			fileCellFor(file(), machine(), tracked({ mode: "600" }), false),
+		).toEqual({ status: "drifted", detail: "권한 600 → 644" });
+		expect(
+			fileCellFor(file(), machine(), tracked({ mode: null }), false).status,
+		).toBe("in_sync");
+	});
+});
+
+describe("planScript", () => {
+	const packages: PlanStep[] = [
 		{
+			kind: "package",
 			itemId: 1,
 			manager: "mise",
 			name: "jq",
@@ -127,6 +215,7 @@ describe("planCommand", () => {
 			action: "install",
 		},
 		{
+			kind: "package",
 			itemId: 2,
 			manager: "brew_formula",
 			name: "sl",
@@ -134,6 +223,7 @@ describe("planCommand", () => {
 			action: "remove",
 		},
 		{
+			kind: "package",
 			itemId: 3,
 			manager: "pacman",
 			name: "cowsay",
@@ -142,27 +232,116 @@ describe("planCommand", () => {
 		},
 	];
 
+	async function run(script: string, home: string, prelude = "") {
+		const proc = Bun.spawn(["sh", "-c", `${prelude}\n${script}`], {
+			env: { ...process.env, HOME: home },
+			stdout: "ignore",
+			stderr: "pipe",
+		});
+		return proc.exited;
+	}
+
 	test("runs removals first, keeps going after a failure, and exits non-zero", async () => {
+		const home = mkdtempSync(join(tmpdir(), "neul-plan-"));
 		// Stub the package managers: log each call; brew fails.
 		const stubs = [
-			'brew() { echo "brew $*" >> "$LOG"; return 1; }',
-			'sudo() { echo "sudo $*" >> "$LOG"; }',
-			'mise() { echo "mise $*" >> "$LOG"; }',
+			'brew() { echo "brew $*" >> "$HOME/log"; return 1; }',
+			'sudo() { echo "sudo $*" >> "$HOME/log"; }',
+			'mise() { echo "mise $*" >> "$HOME/log"; }',
 		].join("\n");
-		const log = `${process.env.TMPDIR ?? "/tmp"}/neul-plan-${process.pid}.log`;
-		const proc = Bun.spawn(["sh", "-c", `${stubs}\n${planCommand(steps)}`], {
-			env: { ...process.env, LOG: log },
-			stdout: "ignore",
-		});
-		expect(await proc.exited).toBe(1);
-		const calls = (await Bun.file(log).text()).trim().split("\n");
-		await Bun.file(log).delete();
-		expect(calls).toEqual([
+		const { display, script } = planScript(packages, new Map());
+		expect(display).toBe(script);
+		expect(await run(script, home, stubs)).toBe(1);
+		expect(readFileSync(join(home, "log"), "utf8").trim().split("\n")).toEqual([
 			"brew uninstall --formula sl",
 			"sudo -n pacman -S --needed --noconfirm cowsay",
 			"sudo -n pacman -D --asexplicit cowsay",
 			"mise use -g -y jq@latest",
 		]);
+	});
+
+	const write = (
+		fileId: number,
+		path: string,
+		content: string,
+		patch: Partial<PlanStep> = {},
+	): PlanStep =>
+		({
+			kind: "file",
+			fileId,
+			path,
+			action: "write",
+			mode: "600",
+			sha256: sha256Hex(content),
+			size: Buffer.byteLength(content),
+			secret: false,
+			...patch,
+		}) as PlanStep;
+
+	test("writes atomically with the mode, backing up what was there", async () => {
+		const home = mkdtempSync(join(tmpdir(), "neul-plan-"));
+		writeFileSync(join(home, ".existing"), "old\n");
+		const contents = new Map([
+			[1, "new ✓\n"],
+			[2, "key\n"],
+		]);
+		const { script } = planScript(
+			[write(1, ".existing", "new ✓\n"), write(2, ".ssh/dir/key", "key\n")],
+			contents,
+		);
+		expect(await run(script, home)).toBe(0);
+		expect(readFileSync(join(home, ".existing"), "utf8")).toBe("new ✓\n");
+		expect(statSync(join(home, ".existing")).mode & 0o777).toBe(0o600);
+		const backups = readdirSync(home).filter((n) =>
+			n.startsWith(".existing.neul-bak-"),
+		);
+		expect(backups).toHaveLength(1);
+		expect(readFileSync(join(home, backups[0] as string), "utf8")).toBe(
+			"old\n",
+		);
+		expect(readFileSync(join(home, ".ssh/dir/key"), "utf8")).toBe("key\n");
+		expect(readdirSync(join(home, ".ssh/dir"))).toEqual(["key"]);
+	});
+
+	test("refuses to write through a symlink", async () => {
+		const home = mkdtempSync(join(tmpdir(), "neul-plan-"));
+		mkdirSync(join(home, "repo"));
+		writeFileSync(join(home, "repo/.zshrc"), "stow\n");
+		symlinkSync("repo/.zshrc", join(home, ".zshrc"));
+		const { script } = planScript(
+			[write(1, ".zshrc", "x\n")],
+			new Map([[1, "x\n"]]),
+		);
+		expect(await run(script, home)).toBe(1);
+		expect(lstatSync(join(home, ".zshrc")).isSymbolicLink()).toBe(true);
+		expect(readlinkSync(join(home, ".zshrc"))).toBe("repo/.zshrc");
+		expect(readFileSync(join(home, "repo/.zshrc"), "utf8")).toBe("stow\n");
+	});
+
+	test("delete moves the file to a backup", async () => {
+		const home = mkdtempSync(join(tmpdir(), "neul-plan-"));
+		writeFileSync(join(home, ".gone"), "bye\n");
+		const { script } = planScript(
+			[write(1, ".gone", "", { action: "delete", sha256: null, size: null })],
+			new Map(),
+		);
+		expect(await run(script, home)).toBe(0);
+		const names = readdirSync(home);
+		expect(names).not.toContain(".gone");
+		const backup = names.find((n) => n.startsWith(".gone.neul-bak-"));
+		expect(readFileSync(join(home, backup as string), "utf8")).toBe("bye\n");
+	});
+
+	test("only the script carries file contents", () => {
+		const secret = "not-a-real-key-7f3a\n";
+		const encoded = Buffer.from(secret).toString("base64");
+		const { display, script } = planScript(
+			[write(1, ".ssh/id", secret, { secret: true })],
+			new Map([[1, secret]]),
+		);
+		expect(display).not.toContain("not-a-real-key");
+		expect(display).not.toContain(encoded);
+		expect(script).toContain(encoded);
 	});
 });
 

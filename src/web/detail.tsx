@@ -6,7 +6,7 @@ import type {
 	MachineDetail,
 	Platform,
 } from "../shared/types";
-import { AdoptButton, useManagedItems } from "./desired";
+import { AdoptButton, AdoptFileButton, useManagedItems } from "./desired";
 import {
 	api,
 	bytes,
@@ -258,6 +258,7 @@ export function Detail({ id }: { id: number }) {
 				</fieldset>
 				{machine.inventory ? (
 					<InventoryTable
+						machineId={machine.id}
 						inventory={machine.inventory}
 						tab={tab}
 						query={query}
@@ -421,15 +422,17 @@ function EditMachine({
 }
 
 function InventoryTable({
+	machineId,
 	inventory,
 	tab,
 	query,
 }: {
+	machineId: number;
 	inventory: Inventory;
 	tab: InventoryTab;
 	query: string;
 }) {
-	const { managed, refresh } = useManagedItems();
+	const { managed, managedPaths, refresh } = useManagedItems();
 	const source = inventory[tab];
 	if (source === null)
 		return <Empty title="이 머신에서 수집하지 않는 항목입니다." />;
@@ -444,7 +447,7 @@ function InventoryTable({
 	);
 	const headers =
 		tab === "files"
-			? ["경로", "종류", "SHA-256", "크기", "링크 대상"]
+			? ["경로", "종류", "SHA-256", "크기", "링크 대상", "관리"]
 			: tab === "mise"
 				? ["도구", "활성 버전", "요청 버전", "설치 버전", "설정 원본", "관리"]
 				: tab === "pacmanExplicit"
@@ -465,6 +468,19 @@ function InventoryTable({
 				</span>,
 				bytes(file.size),
 				file.linkTarget ?? "—",
+				file.kind === "file" ||
+				file.kind === "symlink" ||
+				file.kind === "missing" ? (
+					<AdoptFileButton
+						key="adopt"
+						path={file.path}
+						sourceMachineId={file.kind === "missing" ? undefined : machineId}
+						managedPaths={managedPaths}
+						onChanged={() => void refresh()}
+					/>
+				) : (
+					""
+				),
 			],
 		}));
 	else if (tab === "mise")

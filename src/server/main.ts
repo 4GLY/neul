@@ -1,11 +1,16 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Server } from "bun";
-import { probe } from "../collector/run.ts";
+import { probe, READ_FILE_MAX_BYTES, readFile } from "../collector/run.ts";
 import type {
 	AddMachineRequest,
 	AlertRules,
 	ApplyRequest,
+	DesiredEnsure,
+	DesiredFile,
+	DesiredFileDetail,
+	DesiredFileInput,
+	DesiredFileUpdate,
 	DesiredInput,
 	DesiredManager,
 	DesiredUpdate,
@@ -20,11 +25,14 @@ import type {
 } from "../shared/types.ts";
 import index from "../web/index.html";
 import { buildCompare } from "./compare.ts";
-import { Store } from "./db.ts";
+import { type NewFileVersion, Store } from "./db.ts";
 import {
 	blockedReason,
 	Desired,
+	FileVersionChanged,
+	fileBlockedReason,
 	NAME_PATTERN,
+	sha256Hex,
 	VERSION_PATTERN,
 } from "./desired.ts";
 import {
@@ -32,9 +40,11 @@ import {
 	EXEC_MAX_TIMEOUT_S,
 	Executor,
 } from "./exec.ts";
+import { exportDesired } from "./export.ts";
 import { Hub } from "./hub.ts";
 import { Monitor } from "./monitor.ts";
 import { Pusher } from "./push.ts";
+import { Secrets } from "./secrets.ts";
 
 const port = Number(process.env.NEUL_PORT ?? 7430);
 const hostname = process.env.NEUL_HOST ?? "127.0.0.1";
@@ -55,13 +65,22 @@ const pusher = new Pusher(
 	process.env.NEUL_VAPID_SUBJECT ??
 		(contact ? `mailto:${contact}` : "https://github.com/4GLY/neul"),
 );
-const monitor = new Monitor(store, pusher);
+// Files that changed into exactly their desired state were applied by the hub, not an incident.
+const monitor = new Monitor(store, pusher, (machineId, file) =>
+	desired.matchesDesiredFile(machineId, file),
+);
 const hub = new Hub(store, (...args) => monitor.afterRun(...args));
 // Apply targets re-collect their machine as soon as they finish (design.md §8 P3).
 const executor = new Executor(store, (run, machine) => {
 	if (run.kind === "apply") desired.afterApply(machine);
 });
-const desired = new Desired(store, hub, executor);
+// The hub's age identity lives next to the DB and is never stored in it or exported (§8 P4).
+const secrets = new Secrets(
+	process.env.NEUL_AGE_IDENTITY ?? join(dirname(dbPath), "age-identity.txt"),
+);
+const desired = new Desired(store, hub, executor, secrets);
+const exportDir =
+	process.env.NEUL_EXPORT_DIR ?? join(dirname(dbPath), "export");
 const interrupted = store.interruptExecRuns(new Date().toISOString());
 if (interrupted)
 	console.log(
@@ -306,6 +325,155 @@ function validDesiredFields(
 			);
 	}
 	return { version, ensure, machineIds: ids as number[] } as const;
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+/** A single file path relative to $HOME: no globs, no `.`/`..`/empty segments. */
+function validFilePath(value: unknown): string {
+	const path = typeof value === "string" ? value.trim() : "";
+	if (
+		path.length < 1 ||
+		path.length > 300 ||
+		path.startsWith("/") ||
+		path.endsWith("/") ||
+		path.split("/").some((s) => s === "" || s === "." || s === "..") ||
+		/[*?[]/.test(path) ||
+		CONTROL_CHARS.test(path)
+	)
+		throw new HttpError(
+			400,
+			"파일 경로는 $HOME 기준 상대 경로여야 합니다 (glob·.. 불가)",
+		);
+	return path;
+}
+
+function validMode(value: unknown): string {
+	if (typeof value !== "string" || !/^[0-7]{3,4}$/.test(value))
+		throw new HttpError(400, "권한은 644 같은 8진수여야 합니다");
+	return value;
+}
+
+function validEnsure(value: unknown): DesiredEnsure {
+	if (value !== "present" && value !== "absent")
+		throw new HttpError(400, "ensure는 present 또는 absent여야 합니다");
+	return value;
+}
+
+function validContent(value: unknown): string {
+	if (typeof value !== "string")
+		throw new HttpError(400, "파일 내용이 필요합니다");
+	if (Buffer.byteLength(value) > READ_FILE_MAX_BYTES)
+		throw new HttpError(400, "파일은 256 KiB 이하여야 합니다");
+	return value;
+}
+
+/** Add `path` to the tracked paths unless a pattern already covers it, so it gets collected. */
+function trackPath(path: string): void {
+	const settings = store.getSettings();
+	if (settings.trackedPaths.some((p) => new Bun.Glob(p).match(path))) return;
+	store.putSettings({
+		...settings,
+		trackedPaths: [...settings.trackedPaths, path],
+	});
+}
+
+/**
+ * Targets of a desired file: collected POSIX machines whose copy of the path is not a symlink
+ * or directory. Machines that have not collected the path yet are collected first; one that
+ * still has no state for it (e.g. unreachable) is accepted and shows as unknown.
+ */
+async function validFileTargets(path: string, value: unknown) {
+	if (
+		!Array.isArray(value) ||
+		value.length === 0 ||
+		value.some((id) => !Number.isInteger(id))
+	)
+		throw new HttpError(400, "적용할 머신을 하나 이상 고르세요");
+	const ids = value as number[];
+	if (new Set(ids).size !== ids.length)
+		throw new HttpError(400, "같은 머신이 두 번 들어 있습니다");
+	const machines = ids.map((id) => {
+		const machine = store.getMachine(id);
+		if (!machine) throw new HttpError(400, `없는 머신입니다: ${id}`);
+		const inventory = store.latestInventory(id)?.inventory ?? null;
+		const reason =
+			machine.platform === "windows"
+				? "Windows는 설정 배포 대상이 아닙니다"
+				: inventory
+					? null
+					: "아직 수집되지 않았습니다";
+		if (reason)
+			throw new HttpError(
+				400,
+				`${machine.name}에 ${path}를 적용할 수 없습니다: ${reason}`,
+			);
+		return machine;
+	});
+	const uncollected = machines.filter(
+		(m) =>
+			!store
+				.latestInventory(m.id)
+				?.inventory.files?.some((f) => f.path === path),
+	);
+	await Promise.all(uncollected.map((m) => hub.collect(m)));
+	for (const machine of machines) {
+		const reason = fileBlockedReason(
+			machine,
+			store.latestInventory(machine.id)?.inventory ?? null,
+			path,
+		);
+		if (reason)
+			throw new HttpError(
+				400,
+				`${machine.name}에 ${path}를 적용할 수 없습니다: ${reason}`,
+			);
+	}
+	return ids;
+}
+
+async function newFileVersion(
+	file: { secret: boolean },
+	content: string,
+	source: string,
+	createdBy: string,
+): Promise<NewFileVersion> {
+	return {
+		sha256: sha256Hex(content),
+		size: Buffer.byteLength(content),
+		content: file.secret ? null : content,
+		contentAge: file.secret ? await secrets.encrypt(content) : null,
+		source,
+		createdBy,
+	};
+}
+
+function desiredFileParam(req: { params: { id: string } }): DesiredFile {
+	const file = store.getDesiredFile(Number(req.params.id));
+	if (!file) throw new HttpError(404, "관리 파일을 찾을 수 없습니다");
+	return file;
+}
+
+/** Secret contents never leave the hub through the API. */
+function desiredFileDetail(file: DesiredFile): DesiredFileDetail {
+	const current =
+		file.current && !file.secret
+			? store.getDesiredFileVersionContent(file.id, file.current.versionId)
+			: null;
+	return {
+		...file,
+		versions: store.listDesiredFileVersions(file.id),
+		content: current?.content ?? null,
+	};
+}
+
+// Exports share one git work tree, so they run one at a time.
+let exporting: Promise<unknown> = Promise.resolve();
+function exportOnce() {
+	const next = exporting.then(() => exportDesired(store, exportDir));
+	exporting = next.catch(() => {});
+	return next;
 }
 
 function validSubscription(body: Partial<PushSubscriptionInput>) {
@@ -629,6 +797,20 @@ const server = Bun.serve({
 						throw new HttpError(400, `없는 머신입니다: ${machineId}`);
 					return { plan, machine };
 				});
+				// Contents are resolved before the busy check so the check and start stay synchronous.
+				const scripts: string[] = [];
+				for (const { plan } of confirmed) {
+					try {
+						scripts.push(await desired.scriptFor(plan));
+					} catch (e) {
+						if (e instanceof FileVersionChanged)
+							throw new HttpError(
+								409,
+								"계획이 바뀌었습니다. 새 계획을 확인한 뒤 다시 적용하세요",
+							);
+						throw e;
+					}
+				}
 				const busy = executor.busyMachines(confirmed.map((c) => c.machine.id));
 				if (busy.length > 0)
 					throw new HttpError(
@@ -642,14 +824,135 @@ const server = Bun.serve({
 						.join(", ")}`,
 					timeoutS: APPLY_TIMEOUT_S,
 					createdBy: login,
-					targets: confirmed.map(({ plan, machine }) => ({
+					targets: confirmed.map(({ plan, machine }, i) => ({
 						machine,
 						command: plan.command,
+						script: scripts[i],
 					})),
 				});
 				return { id: run.id };
 			}),
 		},
+		"/api/desired/export": {
+			POST: api(() => exportOnce()),
+		},
+		"/api/desired/file-candidates": api((req) =>
+			desired.fileCandidates(
+				validFilePath(new URL(req.url).searchParams.get("path")),
+			),
+		),
+		"/api/desired/files": {
+			POST: api(async (req, srv) => {
+				const login = authenticate(req, srv);
+				const body = await readJson<Partial<DesiredFileInput>>(req);
+				const path = validFilePath(body.path);
+				const mode = validMode(body.mode);
+				const ensure = validEnsure(body.ensure);
+				const secret = body.secret === true;
+				if (store.listDesiredFiles().some((f) => f.path === path))
+					throw new HttpError(400, "이미 관리 중인 파일입니다");
+				let content: { text: string; source: string } | null = null;
+				const source = typeof body.source === "object" ? body.source : null;
+				if (ensure === "present") {
+					if (source && "content" in source) {
+						content = { text: validContent(source.content), source: "edit" };
+					} else if (source && "machineId" in source) {
+						const machine = store.getMachine(Number(source.machineId));
+						if (!machine) throw new HttpError(400, "원본 머신이 없습니다");
+						try {
+							content = {
+								text: await readFile(machine, path),
+								source: `adopt:${machine.name}`,
+							};
+						} catch (e) {
+							throw new HttpError(
+								400,
+								`${machine.name}에서 ${path}를 읽지 못했습니다: ${e instanceof Error ? e.message : String(e)}`,
+							);
+						}
+					} else {
+						throw new HttpError(400, "내용의 원본을 고르세요");
+					}
+				}
+				trackPath(path);
+				const machineIds = await validFileTargets(path, body.machineIds);
+				const version =
+					content &&
+					(await newFileVersion(
+						{ secret },
+						content.text,
+						content.source,
+						login,
+					));
+				return store.createDesiredFile(
+					{ path, ensure, mode, secret, machineIds },
+					version,
+				);
+			}),
+		},
+		"/api/desired/files/:id": {
+			GET: api((req) => desiredFileDetail(desiredFileParam(req))),
+			PATCH: api(async (req) => {
+				const file = desiredFileParam(req);
+				const body = await readJson<DesiredFileUpdate>(req);
+				const ensure = validEnsure(body.ensure ?? file.ensure);
+				const mode = validMode(body.mode ?? file.mode);
+				if (ensure === "present" && !file.current)
+					throw new HttpError(400, "먼저 내용을 정하세요");
+				const machineIds = await validFileTargets(
+					file.path,
+					body.machineIds ?? file.machineIds,
+				);
+				store.updateDesiredFile(file.id, { ensure, mode, machineIds });
+				return store.getDesiredFile(file.id);
+			}),
+			DELETE: api((req) => {
+				store.deleteDesiredFile(desiredFileParam(req).id);
+				return { ok: true };
+			}),
+		},
+		"/api/desired/files/:id/versions": {
+			POST: api(async (req, srv) => {
+				const login = authenticate(req, srv);
+				const file = desiredFileParam(req);
+				const body = await readJson<{
+					content?: unknown;
+					fromVersionId?: unknown;
+				}>(req);
+				let version: NewFileVersion;
+				if (body.fromVersionId !== undefined) {
+					const from = store.getDesiredFileVersionContent(
+						file.id,
+						Number(body.fromVersionId),
+					);
+					if (!from) throw new HttpError(404, "버전을 찾을 수 없습니다");
+					version = {
+						...from,
+						source: `revert:${Number(body.fromVersionId)}`,
+						createdBy: login,
+					};
+				} else {
+					version = await newFileVersion(
+						file,
+						validContent(body.content),
+						"edit",
+						login,
+					);
+				}
+				if (version.sha256 !== file.current?.sha256)
+					store.addDesiredFileVersion(file.id, version);
+				return desiredFileDetail(store.getDesiredFile(file.id) as DesiredFile);
+			}),
+		},
+		"/api/desired/files/:id/versions/:versionId": api((req) => {
+			const file = desiredFileParam(req);
+			const version = store.getDesiredFileVersionContent(
+				file.id,
+				Number(req.params.versionId),
+			);
+			if (!version) throw new HttpError(404, "버전을 찾을 수 없습니다");
+			return { content: file.secret ? null : version.content };
+		}),
 		"/api/desired/:id": {
 			PATCH: api(async (req) => {
 				const item = store.getDesired(Number(req.params.id));

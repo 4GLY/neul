@@ -756,6 +756,16 @@ th {
 :where(tbody tr:hover) th {
 	background: var(--surface-soft);
 }
+.version-list th,
+.version-list td {
+	padding: var(--space-2) var(--space-3);
+}
+.version-list td {
+	overflow-wrap: anywhere;
+}
+.version-list .small-button {
+	white-space: normal;
+}
 .inventory-table td {
 	overflow-wrap: anywhere;
 	max-width: 480px;
@@ -1105,6 +1115,21 @@ th {
 .desired-dialog h2 {
 	overflow-wrap: anywhere;
 }
+.desired-dialog .exec-target input[type="radio"] {
+	width: var(--space-4);
+	height: var(--space-4);
+	min-height: 0;
+	margin: 0;
+	padding: 0;
+	flex-shrink: 0;
+	accent-color: var(--accent);
+}
+.desired-dialog .exec-target {
+	flex-wrap: wrap;
+}
+.desired-dialog .exec-target .small {
+	overflow-wrap: anywhere;
+}
 .desired-dialog form .notice {
 	margin: 0 var(--space-6) var(--space-4);
 }
@@ -1112,6 +1137,7 @@ th {
 	display: grid;
 	gap: var(--space-5);
 	padding: var(--space-6);
+	min-width: 0;
 }
 .dialog-targets {
 	display: grid;
@@ -1209,6 +1235,24 @@ th {
 }
 .matrix.desired-matrix thead th:first-child {
 	width: auto;
+}
+.file-badges {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--space-2);
+	margin-top: var(--space-1);
+	font-size: var(--text-xs);
+	font-weight: 400;
+	color: var(--muted);
+}
+.desired-dialog .table-scroll {
+	min-width: 0;
+}
+.desired-dialog .section-heading > div {
+	min-width: 0;
+}
+.matrix.desired-matrix tbody th {
+	overflow-wrap: anywhere;
 }
 .item-manager {
 	display: block;
@@ -1428,6 +1472,28 @@ th {
 	.exec-output,
 	.exec-command-block {
 		padding: var(--space-3) var(--space-4);
+	}
+	/* Version rows stack: id and sha on one line, source below, the revert button last. */
+	.version-list thead {
+		display: none;
+	}
+	.version-list tr {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		column-gap: var(--space-3);
+		padding: var(--space-2) 0;
+	}
+	.version-list tr + tr {
+		border-top: var(--border) solid var(--line);
+	}
+	.version-list th,
+	.version-list td {
+		padding: var(--space-1) var(--space-3);
+		border: 0;
+	}
+	.version-list td:nth-child(3),
+	.version-list td:nth-child(4) {
+		grid-column: 2;
 	}
 }
 @media (prefers-reduced-motion: reduce) {

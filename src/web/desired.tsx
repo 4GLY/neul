@@ -4,11 +4,18 @@ import { createPortal } from "react-dom";
 import type {
 	DesiredCandidate,
 	DesiredEnsure,
+	DesiredFile,
+	DesiredFileDetail,
+	DesiredFileInput,
+	DesiredFileRow,
+	DesiredFileUpdate,
 	DesiredItem,
 	DesiredManager,
 	DesiredRow,
 	DesiredStatus,
 	DesiredView,
+	ExportResult,
+	FileCandidate,
 	MachinePlan,
 } from "../shared/types";
 import {
@@ -49,7 +56,7 @@ function DesiredStatusLabel({ status }: { status: DesiredStatus }) {
 
 const itemKey = (manager: DesiredManager, name: string) => `${manager}:${name}`;
 
-/** Managed items by `${manager}:${name}`, for marking rows that are already adopted. */
+/** Managed package keys and file paths, for marking rows that are already adopted. */
 export function useManagedItems() {
 	const { data, refresh } = useResource<DesiredView>("/api/desired");
 	const managed = useMemo(
@@ -62,7 +69,11 @@ export function useManagedItems() {
 			),
 		[data],
 	);
-	return { managed, refresh };
+	const managedPaths = useMemo(
+		() => new Set((data?.files ?? []).map((file) => file.path)),
+		[data],
+	);
+	return { managed, managedPaths, refresh };
 }
 
 /** "채택" for an unmanaged item, or a link to the desired page when it is managed. */
@@ -295,8 +306,488 @@ export function DesiredDialog({
 		</dialog>
 	);
 }
+export function AdoptFileButton({
+	path,
+	sourceMachineId,
+	managedPaths,
+	onChanged,
+}: {
+	path: string;
+	sourceMachineId?: number;
+	managedPaths: Set<string>;
+	onChanged: () => void;
+}) {
+	const [open, setOpen] = useState(false);
+	if (managedPaths.has(path))
+		return (
+			<a className="managed-link small" href="#/desired">
+				관리 중
+			</a>
+		);
+	return (
+		<>
+			<button
+				type="button"
+				className="small-button quiet adopt-button"
+				onClick={() => setOpen(true)}
+				aria-label={`${path} 채택`}
+			>
+				채택
+			</button>
+			{open
+				? createPortal(
+						<FileDialog
+							path={path}
+							sourceMachineId={sourceMachineId}
+							onClose={() => setOpen(false)}
+							onSaved={() => {
+								setOpen(false);
+								onChanged();
+							}}
+						/>,
+						document.body,
+					)
+				: null}
+		</>
+	);
+}
+
+function defaultFileTargets(
+	candidates: FileCandidate[],
+	source?: FileCandidate,
+) {
+	return candidates
+		.filter(
+			(candidate) =>
+				!candidate.blocked &&
+				candidate.kind === "file" &&
+				(source?.sha256
+					? candidate.sha256 === source.sha256
+					: candidate.machineId === source?.machineId),
+		)
+		.map((candidate) => candidate.machineId);
+}
+
+export function FileDialog({
+	path,
+	sourceMachineId,
+	existing,
+	onClose,
+	onSaved,
+}: {
+	path: string;
+	sourceMachineId?: number;
+	existing?: DesiredFile;
+	onClose: () => void;
+	onSaved: () => void;
+}) {
+	const ref = useRef<HTMLDialogElement>(null);
+	const { data: candidates, error: loadError } = useResource<FileCandidate[]>(
+		`/api/desired/file-candidates?path=${encodeURIComponent(path)}`,
+	);
+	const [detail, setDetail] = useState<DesiredFileDetail | null>(null);
+	const [detailError, setDetailError] = useState("");
+	const [ensure, setEnsure] = useState<DesiredEnsure>(
+		existing?.ensure ?? "present",
+	);
+	const [secret, setSecret] = useState(
+		existing?.secret ??
+			(path.startsWith(".ssh/") &&
+				!path.startsWith(".ssh/config") &&
+				![".pub", "known_hosts", "authorized_keys"].some((suffix) =>
+					path.endsWith(suffix),
+				)),
+	);
+	const [source, setSource] = useState<number | "manual" | null>(null);
+	const [mode, setMode] = useState(existing?.mode ?? "");
+	const [modeEdited, setModeEdited] = useState(false);
+	const [targets, setTargets] = useState<number[] | null>(
+		existing?.machineIds ?? null,
+	);
+	const [content, setContent] = useState("");
+	const [contentEdited, setContentEdited] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+	const sourceCandidate = candidates?.find((c) => c.machineId === source);
+
+	useEffect(() => {
+		ref.current?.showModal();
+	}, []);
+
+	useEffect(() => {
+		if (!existing) return;
+		const controller = new AbortController();
+		void api<DesiredFileDetail>(
+			`/api/desired/files/${existing.id}`,
+			"GET",
+			undefined,
+			controller.signal,
+		)
+			.then((file) => {
+				setDetail(file);
+				setContent(file.content ?? "");
+				setEnsure(file.ensure);
+				setMode(file.mode);
+				setTargets(file.machineIds);
+			})
+			.catch((cause) => {
+				if (!controller.signal.aborted) setDetailError(errorMessage(cause));
+			});
+		return () => controller.abort();
+	}, [existing]);
+
+	useEffect(() => {
+		if (!candidates || existing || source !== null) return;
+		const available = candidates.filter(
+			(c) => c.kind === "file" || c.kind === "symlink",
+		);
+		const initial =
+			available.find((c) => c.machineId === sourceMachineId) ?? available[0];
+		setSource(initial?.machineId ?? "manual");
+		setTargets(defaultFileTargets(candidates, initial));
+	}, [candidates, existing, source, sourceMachineId]);
+
+	useEffect(() => {
+		if (existing || modeEdited) return;
+		setMode(sourceCandidate?.mode ?? (secret ? "600" : "644"));
+	}, [existing, modeEdited, sourceCandidate, secret]);
+
+	function chooseSource(value: number | "manual") {
+		setSource(value);
+		setTargets(
+			defaultFileTargets(
+				candidates ?? [],
+				candidates?.find((c) => c.machineId === value),
+			),
+		);
+	}
+
+	async function submit(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		setBusy(true);
+		setError("");
+		try {
+			const body: DesiredFileUpdate = {
+				ensure,
+				mode,
+				machineIds: targets ?? [],
+			};
+			if (existing) {
+				const file = await api<DesiredFile>(
+					`/api/desired/files/${existing.id}`,
+					"PATCH",
+					body,
+				);
+				setDetail((current) => (current ? { ...current, ...file } : null));
+			} else {
+				const input: DesiredFileInput = {
+					path,
+					ensure,
+					mode,
+					secret,
+					machineIds: targets ?? [],
+					source:
+						ensure === "absent"
+							? null
+							: source === "manual"
+								? { content }
+								: source === null
+									? null
+									: { machineId: source },
+				};
+				await api("/api/desired/files", "POST", input);
+			}
+			onSaved();
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	async function saveVersion(
+		body: { content: string } | { fromVersionId: number },
+	) {
+		if (!existing) return;
+		setBusy(true);
+		setError("");
+		try {
+			const file = await api<DesiredFileDetail>(
+				`/api/desired/files/${existing.id}/versions`,
+				"POST",
+				body,
+			);
+			setDetail(file);
+			setContent(file.content ?? "");
+			setContentEdited(false);
+			onSaved();
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	return (
+		<dialog
+			ref={ref}
+			className="desired-dialog"
+			aria-labelledby="file-dialog-title"
+			onClose={onClose}
+		>
+			<form onSubmit={(event) => void submit(event)}>
+				<div className="section-heading">
+					<div>
+						<p className="eyebrow">파일{secret ? " · 시크릿" : ""}</p>
+						<h2 id="file-dialog-title" className="mono">
+							{path}
+						</h2>
+					</div>
+					<button
+						type="button"
+						className="quiet small-button"
+						onClick={() => ref.current?.close()}
+					>
+						닫기
+					</button>
+				</div>
+				<fieldset
+					disabled={busy || (!!existing && !detail)}
+					className="dialog-body"
+				>
+					<div className="segmented" role="radiogroup" aria-label="원하는 상태">
+						{(["present", "absent"] as const).map((value) => (
+							<label
+								key={value}
+								className={`segment ${ensure === value ? "selected" : ""}`}
+							>
+								<input
+									type="radio"
+									name="file-ensure"
+									checked={ensure === value}
+									onChange={() => setEnsure(value)}
+								/>
+								{value === "present" ? "있어야 함" : "없어야 함"}
+							</label>
+						))}
+					</div>
+					{!existing && ensure === "present" ? (
+						<fieldset className="dialog-targets">
+							<legend className="label-text">내용 원본</legend>
+							{candidates
+								?.filter((c) => c.kind === "file" || c.kind === "symlink")
+								.map((c) => (
+									<label key={c.machineId} className="exec-target">
+										<input
+											type="radio"
+											name="file-source"
+											checked={source === c.machineId}
+											onChange={() => chooseSource(c.machineId)}
+										/>
+										<span className="exec-target-name">{c.machineName}</span>
+										<span className="muted small">
+											{c.kind} · {c.sha256?.slice(0, 12) ?? "—"}
+										</span>
+									</label>
+								))}
+							<label className="exec-target">
+								<input
+									type="radio"
+									name="file-source"
+									checked={source === "manual"}
+									onChange={() => chooseSource("manual")}
+								/>
+								직접 입력
+							</label>
+						</fieldset>
+					) : null}
+					{existing || (ensure === "present" && source === "manual") ? (
+						<div className="dialog-targets">
+							<label>
+								{existing && secret ? "새 내용" : "내용"}
+								<textarea
+									className="exec-command mono"
+									rows={8}
+									value={content}
+									onChange={(event) => {
+										setContent(event.target.value);
+										setContentEdited(true);
+									}}
+									spellCheck={false}
+								/>
+							</label>
+							{existing && secret ? (
+								<p className="muted small">
+									저장된 내용은 볼 수 없습니다. 바꿀 때만 새 내용을 넣으세요.
+								</p>
+							) : null}
+							{existing ? (
+								<button
+									type="button"
+									disabled={!contentEdited}
+									onClick={() => void saveVersion({ content })}
+								>
+									새 버전 저장
+								</button>
+							) : null}
+						</div>
+					) : null}
+					<label>
+						파일 권한
+						<input
+							className="mono"
+							value={mode}
+							onChange={(event) => {
+								setMode(event.target.value);
+								setModeEdited(true);
+							}}
+							placeholder="644"
+							pattern="[0-7]{3,4}"
+							required
+						/>
+					</label>
+					{!existing ? (
+						<label className="checkbox-label">
+							<input
+								type="checkbox"
+								checked={secret}
+								onChange={(event) => setSecret(event.target.checked)}
+							/>
+							시크릿 · 허브에 암호화해서 저장
+						</label>
+					) : null}
+					<div className="dialog-targets">
+						<span className="label-text">적용 대상 머신</span>
+						{!candidates ? (
+							<p className="muted small" role="status">
+								<Spinner /> 머신 상태를 확인하는 중…
+							</p>
+						) : (
+							candidates.map((c) => (
+								<label
+									key={c.machineId}
+									className={`exec-target ${c.blocked ? "blocked" : ""}`}
+								>
+									<input
+										type="checkbox"
+										checked={targets?.includes(c.machineId) ?? false}
+										disabled={!!c.blocked}
+										onChange={() =>
+											setTargets((current) =>
+												current?.includes(c.machineId)
+													? current.filter((id) => id !== c.machineId)
+													: [...(current ?? []), c.machineId],
+											)
+										}
+									/>
+									<span className="exec-target-name">{c.machineName}</span>
+									<span className="muted small">
+										{c.blocked ??
+											(c.kind === null
+												? "미수집"
+												: c.kind === "missing"
+													? "없음"
+													: `${c.kind} · ${c.sha256?.slice(0, 12) ?? "—"}`)}
+									</span>
+								</label>
+							))
+						)}
+					</div>
+					{existing && detail ? (
+						<section className="dialog-targets" aria-label="파일 버전">
+							<h3>버전</h3>
+							{detail.versions.length ? (
+								<div className="table-scroll">
+									<table className="version-list">
+										<thead>
+											<tr>
+												<th scope="col">버전</th>
+												<th scope="col">SHA-256 · 크기</th>
+												<th scope="col">원본 · 시각 · 작성자</th>
+												<th scope="col">동작</th>
+											</tr>
+										</thead>
+										<tbody>
+											{detail.versions.map((version) => (
+												<tr key={version.id}>
+													<th scope="row" className="mono">
+														{version.id}
+													</th>
+													<td className="mono">
+														{version.sha256.slice(0, 12)}
+														<span className="cell-detail muted small">
+															{version.size} bytes
+														</span>
+													</td>
+													<td>
+														{version.source}
+														<time
+															className="cell-detail muted small"
+															dateTime={version.createdAt}
+														>
+															{new Date(version.createdAt).toLocaleString(
+																"ko-KR",
+															)}
+														</time>
+														<span className="cell-detail muted small">
+															{version.createdBy}
+														</span>
+													</td>
+													<td>
+														<button
+															type="button"
+															className="small-button"
+															disabled={
+																version.id === detail.current?.versionId
+															}
+															onClick={() =>
+																void saveVersion({ fromVersionId: version.id })
+															}
+														>
+															이 버전으로 되돌리기
+														</button>
+													</td>
+												</tr>
+											))}
+										</tbody>
+									</table>
+								</div>
+							) : (
+								<p className="muted small">저장된 버전이 없습니다.</p>
+							)}
+						</section>
+					) : null}
+				</fieldset>
+				<ErrorNotice message={error || loadError || detailError} />
+				{existing && !detail && !detailError ? <Loading /> : null}
+				<div className="form-footer">
+					<p className="muted small">
+						저장만 하고 파일 쓰기·삭제는 맞추기 화면에서 확인 후 적용합니다.
+					</p>
+					<button
+						type="submit"
+						className="primary"
+						disabled={
+							busy ||
+							!candidates ||
+							(!!existing && !detail) ||
+							(!existing && ensure === "present" && source === null)
+						}
+					>
+						{busy ? <Spinner /> : null}
+						{existing ? "변경 저장" : "채택"}
+					</button>
+				</div>
+			</form>
+		</dialog>
+	);
+}
 
 function stepLabel(step: MachinePlan["steps"][number]) {
+	if (step.kind === "file")
+		return step.action === "write"
+			? `쓰기 · ${step.path} (${step.mode}, ${step.size} bytes)`
+			: `삭제 · ${step.path}`;
 	const target =
 		step.version && step.action === "install"
 			? `${step.name}@${step.version}`
@@ -376,7 +867,11 @@ function PlanPanel({
 								<ul className="plan-steps">
 									{plan.steps.map((step) => (
 										<li
-											key={step.itemId}
+											key={
+												step.kind === "package"
+													? `p${step.itemId}`
+													: `f${step.fileId}`
+											}
 											className={`plan-step ${step.action}`}
 										>
 											{stepLabel(step)}
@@ -397,7 +892,7 @@ function PlanPanel({
 							aria-labelledby="apply-confirm-title"
 						>
 							<h3 id="apply-confirm-title">
-								{chosen.length}대에서 패키지를 설치·제거합니다
+								{chosen.length}대의 패키지·도구·파일을 원하는 상태로 맞춥니다
 							</h3>
 							<ul className="target-chips">
 								{chosen.map((p) => (
@@ -505,6 +1000,13 @@ export function DesiredPage() {
 		name: string;
 		existing?: DesiredItem;
 	} | null>(null);
+	const [fileDialog, setFileDialog] = useState<{
+		path: string;
+		existing?: DesiredFile;
+	} | null>(null);
+	const [filePath, setFilePath] = useState("");
+	const [exporting, setExporting] = useState(false);
+	const [exportStatus, setExportStatus] = useState("");
 	const [error, setError] = useState("");
 	const refresh = () => {
 		void view.refresh();
@@ -526,9 +1028,46 @@ export function DesiredPage() {
 		}
 	}
 
+	async function removeFile(file: DesiredFileRow) {
+		if (
+			!window.confirm(
+				`${file.path}을(를) 관리에서 뺄까요? 머신의 파일은 그대로 둡니다.`,
+			)
+		)
+			return;
+		try {
+			await api(`/api/desired/files/${file.id}`, "DELETE");
+			refresh();
+		} catch (cause) {
+			setError(errorMessage(cause));
+		}
+	}
+
+	async function exportGit() {
+		setExporting(true);
+		setExportStatus("");
+		setError("");
+		try {
+			const result = await api<ExportResult>("/api/desired/export", "POST");
+			setExportStatus(
+				result.commit
+					? `커밋 ${result.commit} · 파일 ${result.files}개 · ${result.dir}`
+					: "바뀐 내용이 없습니다",
+			);
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setExporting(false);
+		}
+	}
+
 	const targetMachines =
 		view.data?.machines.filter((m) =>
 			view.data?.items.some((item) => item.machineIds.includes(m.id)),
+		) ?? [];
+	const fileMachines =
+		view.data?.machines.filter((m) =>
+			view.data?.files.some((file) => file.machineIds.includes(m.id)),
 		) ?? [];
 	// Remount the plan when it changes so the machine selection follows the new plan.
 	const planKey = (plan.data ?? []).map((p) => p.command).join("\u0000");
@@ -538,8 +1077,22 @@ export function DesiredPage() {
 			<PageHeading
 				eyebrow="DESIRED STATE"
 				title="맞추기"
-				description="채택한 패키지·도구를 머신마다 원하는 상태로 맞춥니다. 허브는 차이만 계산하고, 적용은 확인한 뒤에만 합니다."
-			/>
+				description="채택한 패키지·도구·파일을 머신마다 원하는 상태로 맞춥니다. 허브는 차이만 계산하고, 적용은 확인한 뒤에만 합니다."
+			>
+				<button
+					type="button"
+					onClick={() => void exportGit()}
+					disabled={exporting}
+				>
+					{exporting ? <Spinner /> : null}
+					git으로 내보내기
+				</button>
+			</PageHeading>
+			{exportStatus ? (
+				<p className="notice small" role="status">
+					{exportStatus}
+				</p>
+			) : null}
 			<ErrorNotice
 				message={error || view.error || plan.error}
 				retry={refresh}
@@ -651,6 +1204,138 @@ export function DesiredPage() {
 					</Empty>
 				)}
 			</section>
+			<section className="panel" aria-labelledby="desired-files-title">
+				<div className="section-heading">
+					<div className="row-title">
+						<h2 id="desired-files-title">파일</h2>
+						<span className="count-label mono">
+							{view.data?.files.length ?? 0}
+						</span>
+					</div>
+					<form
+						className="add-item"
+						onSubmit={(event) => {
+							event.preventDefault();
+							if (filePath.trim()) setFileDialog({ path: filePath.trim() });
+						}}
+					>
+						<label>
+							<span className="sr-only">파일 경로 · $HOME 기준</span>
+							<input
+								className="mono"
+								value={filePath}
+								onChange={(event) => setFilePath(event.target.value)}
+								placeholder=".ssh/config"
+								autoComplete="off"
+							/>
+						</label>
+						<button type="submit" disabled={!filePath.trim()}>
+							파일 추가
+						</button>
+					</form>
+				</div>
+				{view.loading ? (
+					<Loading />
+				) : view.data?.files.length ? (
+					<div className="table-scroll inventory-scroll">
+						<table className="matrix desired-matrix">
+							<thead>
+								<tr>
+									<th scope="col">경로</th>
+									<th scope="col">원하는 상태</th>
+									{fileMachines.map((machine) => (
+										<th key={machine.id} scope="col">
+											<a href={`#/machines/${machine.id}`}>{machine.name}</a>
+										</th>
+									))}
+									<th scope="col">동작</th>
+								</tr>
+							</thead>
+							<tbody>
+								{view.data.files.map((file) => (
+									<tr key={file.id}>
+										<th scope="row">
+											<span className="mono">{file.path}</span>
+											<span className="file-badges">
+												{file.secret ? <span>시크릿</span> : null}
+												<span className="mono">{file.mode}</span>
+											</span>
+										</th>
+										<td className="mono">
+											{file.ensure === "absent"
+												? "없음"
+												: `있음 · ${file.current?.sha256.slice(0, 12) ?? "버전 없음"}${file.current ? ` · ${file.current.size} bytes` : ""}`}
+										</td>
+										{fileMachines.map((machine) => {
+											const cell = file.cells[machine.id];
+											return (
+												<td
+													key={machine.id}
+													className={cell ? "" : "not-applicable"}
+												>
+													{cell ? (
+														<>
+															<DesiredStatusLabel status={cell.status} />
+															{cell.detail ? (
+																<span className="cell-detail muted small">
+																	{cell.detail}
+																</span>
+															) : null}
+														</>
+													) : (
+														<span className="small">대상 아님</span>
+													)}
+												</td>
+											);
+										})}
+										<td>
+											<div className="actions row-actions">
+												<button
+													type="button"
+													className="small-button"
+													onClick={() =>
+														setFileDialog({ path: file.path, existing: file })
+													}
+													aria-label={`${file.path} 열기`}
+												>
+													열기
+												</button>
+												<button
+													type="button"
+													className="small-button danger"
+													onClick={() => void removeFile(file)}
+													aria-label={`${file.path} 관리 해제`}
+												>
+													해제
+												</button>
+											</div>
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
+				) : (
+					<Empty title="관리 중인 파일이 없습니다.">
+						<p>
+							비교 화면이나 머신 인벤토리에서 채택하거나, 위에서 경로를
+							추가하세요.
+						</p>
+					</Empty>
+				)}
+			</section>
+			{fileDialog ? (
+				<FileDialog
+					key={fileDialog.path}
+					path={fileDialog.path}
+					existing={fileDialog.existing}
+					onClose={() => setFileDialog(null)}
+					onSaved={() => {
+						if (!fileDialog.existing) setFileDialog(null);
+						refresh();
+					}}
+				/>
+			) : null}
 			{dialog ? (
 				<DesiredDialog
 					key={`${dialog.manager}:${dialog.name}`}

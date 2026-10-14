@@ -6,7 +6,7 @@ import type {
 	DesiredItem,
 	DesiredManager,
 } from "../shared/types";
-import { AdoptButton, useManagedItems } from "./desired";
+import { AdoptButton, AdoptFileButton, useManagedItems } from "./desired";
 import {
 	Empty,
 	ErrorNotice,
@@ -28,7 +28,7 @@ export function Compare() {
 	const { data, error, loading, refresh } =
 		useResource<CompareView>("/api/compare");
 	const [differentOnly, setDifferentOnly] = useState(true);
-	const { managed, refresh: refreshManaged } = useManagedItems();
+	const { managed, managedPaths, refresh: refreshManaged } = useManagedItems();
 	const [search, setSearch] = useState("");
 	const query = useDeferredValue(search.trim().toLowerCase());
 	return (
@@ -79,6 +79,7 @@ export function Compare() {
 							differentOnly={differentOnly}
 							query={query}
 							managed={managed}
+							managedPaths={managedPaths}
 							onManagedChange={refreshManaged}
 						/>
 					))}
@@ -100,6 +101,7 @@ const Matrix = memo(function Matrix({
 	differentOnly,
 	query,
 	managed,
+	managedPaths,
 	onManagedChange,
 }: {
 	section: CompareSection;
@@ -107,6 +109,7 @@ const Matrix = memo(function Matrix({
 	differentOnly: boolean;
 	query: string;
 	managed: Map<string, DesiredItem>;
+	managedPaths: Set<string>;
 	onManagedChange: () => void;
 }) {
 	const manager = SECTION_MANAGERS[section.id];
@@ -182,6 +185,12 @@ const Matrix = memo(function Matrix({
 													manager={manager}
 													name={row.key}
 													managed={managed}
+													onChanged={onManagedChange}
+												/>
+											) : manager === null ? (
+												<AdoptFileButton
+													path={row.key}
+													managedPaths={managedPaths}
 													onChanged={onManagedChange}
 												/>
 											) : null}

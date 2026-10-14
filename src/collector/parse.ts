@@ -187,7 +187,7 @@ function trackedFiles(lines: string[] | undefined): TrackedFile[] | null {
 	if (lines === undefined) return null;
 	const out: TrackedFile[] = [];
 	for (const line of lines) {
-		const [kind, sha, size, target, ...rest] = line.split("\t");
+		const [kind, sha, size, mode, target, ...rest] = line.split("\t");
 		const path = rest.join("\t");
 		if (!kind || !(kind in FILE_KINDS) || path === "") continue;
 		out.push({
@@ -195,6 +195,7 @@ function trackedFiles(lines: string[] | undefined): TrackedFile[] | null {
 			kind: kind as FileKind,
 			sha256: sha || null,
 			size: size ? Number(size) : null,
+			mode: mode || null,
 			linkTarget: target || null,
 		});
 	}

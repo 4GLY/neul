@@ -65,6 +65,7 @@ export interface TrackedFile {
 	kind: FileKind;
 	sha256: string | null;
 	size: number | null;
+	mode?: string | null; // octal like "644"; absent in inventories collected before P4
 	linkTarget: string | null;
 }
 
@@ -315,6 +316,7 @@ export interface DesiredRow extends DesiredItem {
 export interface DesiredView {
 	machines: { id: number; name: string; status: MachineStatus }[];
 	items: DesiredRow[];
+	files: DesiredFileRow[];
 }
 
 export interface DesiredInput {
@@ -340,21 +342,101 @@ export interface DesiredCandidate {
 	version: string | null; // mise: the globally requested version
 }
 
-export interface PlanStep {
-	itemId: number;
-	manager: DesiredManager;
-	name: string;
-	version: string | null;
-	action: "install" | "remove";
-}
+export type PlanStep =
+	| {
+			kind: "package";
+			itemId: number;
+			manager: DesiredManager;
+			name: string;
+			version: string | null;
+			action: "install" | "remove";
+	  }
+	| {
+			kind: "file";
+			fileId: number;
+			path: string;
+			action: "write" | "delete";
+			mode: string;
+			sha256: string | null; // the content version written; null for delete
+			size: number | null;
+			secret: boolean;
+	  };
 
 export interface MachinePlan {
 	machineId: number;
 	machineName: string;
 	steps: PlanStep[];
-	command: string; // exactly what the apply run executes
+	command: string; // what the user confirms and the run records; file contents are omitted
 }
 
 export interface ApplyRequest {
 	plans: { machineId: number; command: string }[]; // as confirmed; must match the current plan
+}
+
+// P4 desired state for files and keys (design.md §8 P4).
+
+export interface DesiredFile {
+	id: number;
+	path: string; // relative to $HOME
+	ensure: DesiredEnsure;
+	mode: string; // octal like "644"
+	secret: boolean; // content stored age-encrypted and never returned by the API
+	machineIds: number[];
+	createdAt: string;
+	current: {
+		versionId: number;
+		sha256: string;
+		size: number;
+		createdAt: string;
+	} | null; // null until a content version exists (absent-only files)
+}
+
+export interface DesiredFileRow extends DesiredFile {
+	cells: Record<number, DesiredCell>; // machineId -> state, target machines only
+}
+
+export interface DesiredFileVersion {
+	id: number;
+	sha256: string;
+	size: number;
+	source: string; // "adopt:<machine>" | "edit" | "revert:<version id>"
+	createdAt: string;
+	createdBy: string;
+}
+
+export interface DesiredFileDetail extends DesiredFile {
+	versions: DesiredFileVersion[]; // newest first
+	content: string | null; // current version; null for secrets or without a version
+}
+
+export interface DesiredFileInput {
+	path: string;
+	ensure: DesiredEnsure;
+	mode: string;
+	secret: boolean;
+	machineIds: number[];
+	source: { machineId: number } | { content: string } | null; // null only with ensure "absent"
+}
+
+export interface DesiredFileUpdate {
+	ensure?: DesiredEnsure;
+	mode?: string;
+	machineIds?: number[];
+}
+
+/** One machine's view of a path before adopting it. */
+export interface FileCandidate {
+	machineId: number;
+	machineName: string;
+	blocked: string | null; // why this machine cannot be a target
+	kind: FileKind | null; // null = path not collected yet
+	sha256: string | null;
+	mode: string | null;
+	linkTarget: string | null;
+}
+
+export interface ExportResult {
+	dir: string;
+	commit: string | null; // null when nothing changed since the last export
+	files: number;
 }

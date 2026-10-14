@@ -69,7 +69,9 @@ export class OutputBuffer {
  * POSIX wrapper sent on stdin to `sh -s`. The hub keeps stdin open while the command runs:
  * the command gets /dev/null as stdin and its own process group, and a watchdog reading the
  * hub's stdin kills that group on EOF. Closing stdin (cancel, timeout, or the hub exiting)
- * therefore stops the command and its children on the remote side too.
+ * therefore stops the command and its children on the remote side too. The command is written
+ * to a private temp file and run from there, so its text (which may carry file contents) never
+ * shows up in the remote process list.
  */
 export function posixScript(command: string): string {
 	const tag = `NEUL_CMD_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -79,17 +81,22 @@ PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:/opt/homebrew/bin:/opt/home
 export PATH
 exec 3<&0
 set -m 2>/dev/null
-neul_cmd=$(cat <<'${tag}'
+neul_umask=$(umask)
+umask 077
+neul_file=$(mktemp "\${TMPDIR:-/tmp}/neul-cmd.XXXXXX") || exit 1
+cat > "$neul_file" <<'${tag}'
 ${command}
 ${tag}
-)
-sh -c "$neul_cmd" </dev/null 3<&- &
+umask "$neul_umask"
+sh "$neul_file" </dev/null 3<&- &
 neul_pid=$!
 { cat >/dev/null; kill -KILL -- -$neul_pid || kill -KILL $neul_pid; } <&3 >/dev/null 2>&1 &
 neul_watch=$!
 exec 3<&-
 wait $neul_pid 2>/dev/null
 neul_code=$?
+rm -f "$neul_file"
+# Exit right after the kill: bash would otherwise report the killed job before the next command.
 kill -KILL -- -$neul_watch 2>/dev/null || kill -KILL $neul_watch 2>/dev/null
 exit $neul_code
 }
@@ -115,6 +122,7 @@ interface LiveTarget {
 	machine: MachineRow;
 	target: ExecTarget;
 	output: OutputBuffer;
+	script: string; // what runs; only target.command is stored and shown
 	proc: Bun.Subprocess<"pipe", "pipe", "pipe"> | null;
 	stopReason: "canceled" | "timeout" | null;
 	killTimer: Timer | undefined;
@@ -153,13 +161,17 @@ export class Executor {
 		);
 	}
 
-	/** A target command of null runs `command`; apply runs give every machine its own script. */
+	/**
+	 * A target command of null runs `command`; apply runs give every machine its own script.
+	 * `script`, when given, is what runs instead of the stored and displayed `command`; it is
+	 * never persisted, so it may carry file contents.
+	 */
 	start(request: {
 		kind: "command" | "apply";
 		command: string;
 		timeoutS: number;
 		createdBy: string;
-		targets: { machine: MachineRow; command: string | null }[];
+		targets: { machine: MachineRow; command: string | null; script?: string }[];
 	}): ExecRunDetail {
 		const { run, targetIds } = this.store.createExecRun({
 			...request,
@@ -169,13 +181,14 @@ export class Executor {
 		const live: LiveRun = {
 			run: base,
 			listeners: new Set(),
-			targets: request.targets.map(({ machine }, i) => {
+			targets: request.targets.map(({ machine, command, script }, i) => {
 				const { output: _output, ...target } = targets[i] as ExecTargetDetail;
 				return {
 					targetId: targetIds[i] as number,
 					machine,
 					target,
 					output: new OutputBuffer(),
+					script: script ?? command ?? request.command,
 					proc: null,
 					stopReason: null,
 					killTimer: undefined,
@@ -185,12 +198,7 @@ export class Executor {
 		this.live.set(run.id, live);
 		for (const t of live.targets) {
 			this.busy.set(t.machine.id, run.id);
-			void this.runTarget(
-				live,
-				t,
-				t.target.command ?? request.command,
-				request.timeoutS,
-			);
+			void this.runTarget(live, t, t.script, request.timeoutS);
 		}
 		return run;
 	}

@@ -87,6 +87,54 @@ export async function runCollector(
 	);
 }
 
+export const READ_FILE_MAX_BYTES = 256 * 1024;
+const READ_FILE_TIMEOUT_MS = 30_000;
+
+/** Reads `$HOME/$1` as base64; `[ -f ]` follows symlinks, so stow-linked files read their source. */
+const READ_FILE_SCRIPT = `f="$HOME/$1"
+[ -f "$f" ] || { echo "neul: 일반 파일이 아닙니다: $1" >&2; exit 3; }
+[ "$(wc -c < "$f" | tr -d ' ')" -le ${READ_FILE_MAX_BYTES} ] || { echo "neul: 256 KiB를 넘습니다: $1" >&2; exit 4; }
+base64 < "$f"
+`;
+
+/** Content of a UTF-8 text file at `path` (relative to $HOME) on a POSIX machine. */
+export async function readFile(target: Target, path: string): Promise<string> {
+	if (target.platform === "windows")
+		throw new Error("Windows 파일은 가져올 수 없습니다");
+	const cmd =
+		target.transport === "local"
+			? ["sh", "-s", "--", path]
+			: [
+					"ssh",
+					...SSH_OPTIONS,
+					target.alias,
+					"sh",
+					"-s",
+					"--",
+					`'${path.replaceAll("'", `'\\''`)}'`,
+				];
+	const result = await spawnWithInput(
+		cmd,
+		READ_FILE_SCRIPT,
+		READ_FILE_TIMEOUT_MS,
+	);
+	if (result.exitCode === null)
+		throw new Error(`파일 읽기 시간 초과 (${READ_FILE_TIMEOUT_MS / 1000}s)`);
+	if (target.transport === "ssh" && result.exitCode === 255)
+		throw new Error("머신에 연결할 수 없습니다");
+	if (result.exitCode !== 0)
+		throw new Error(lastLine(result.stderr) ?? `종료 코드 ${result.exitCode}`);
+	const bytes = Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+	try {
+		// ignoreBOM keeps a leading BOM so the content (and its sha256) matches the file.
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+			bytes,
+		);
+	} catch {
+		throw new Error("UTF-8 텍스트 파일만 관리할 수 있습니다");
+	}
+}
+
 /** Map a finished collector process to a run status before parsing (design.md §4.2). */
 export function processStatus(
 	target: Target,
