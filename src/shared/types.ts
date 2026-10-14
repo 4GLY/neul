@@ -25,6 +25,18 @@ export interface Facts {
 		availableB: number;
 	} | null;
 	battery: { percent: number; state: string } | null;
+	updates: {
+		brew: string[] | null; // `brew outdated` names; null = brew not present
+		pacman: string[] | null; // `checkupdates` names; null = unavailable or failed
+	};
+	repos: RepoStatus[] | null; // null = no repos configured or windows
+}
+
+export interface RepoStatus {
+	path: string; // relative to $HOME
+	state: "ok" | "missing";
+	dirty: number | null; // `git status --porcelain` entries
+	ahead: number | null; // commits ahead of upstream; null = no upstream
 }
 
 export interface BrewPackage {
@@ -93,6 +105,7 @@ export interface MachineSummary {
 	transport: Transport;
 	platform: Platform;
 	enabled: boolean;
+	notifyUnreachable: boolean; // alert when the machine stays unreachable (off for laptops that sleep)
 	status: MachineStatus;
 	collecting: boolean; // a collection is in flight right now
 	lastRun: RunSummary | null;
@@ -134,6 +147,44 @@ export interface CompareView {
 export interface Settings {
 	trackedPaths: string[];
 	collectIntervalMin: number;
+	alertRules: AlertRules;
+}
+
+// P2 monitoring and alerts (design.md §5, §6, §8 P2).
+
+/** Each threshold is null when its rule is off. */
+export interface AlertRules {
+	unreachableMin: number | null; // no successful collection for this many minutes
+	diskPercent: number | null; // disk used ≥ this percent
+	updatesCount: number | null; // brew + pacman pending updates ≥ this
+	trackedFiles: boolean; // tracked file content changed
+	repos: string[]; // git repos ($HOME-relative) to watch for uncommitted or unpushed work
+}
+
+export type AlertRule = "unreachable" | "disk" | "updates" | "repo" | "files";
+
+export const ALERT_RULE_LABELS: Record<AlertRule, string> = {
+	unreachable: "연결 끊김",
+	disk: "디스크",
+	updates: "업데이트 대기",
+	repo: "저장소 변경",
+	files: "추적 파일 변경",
+};
+
+export interface Alert {
+	id: number;
+	machineId: number;
+	machineName: string;
+	rule: AlertRule;
+	subject: string; // disk path, repo path, or "" when the rule has one alert per machine
+	message: string;
+	openedAt: string;
+	resolvedAt: string | null; // null while open; events (files) are resolved when opened
+}
+
+export interface PushSubscriptionInput {
+	endpoint: string;
+	keys: { p256dh: string; auth: string };
 }
 
 export interface AddMachineRequest {
@@ -147,6 +198,7 @@ export interface UpdateMachineRequest {
 	name?: string;
 	enabled?: boolean;
 	platform?: Platform;
+	notifyUnreachable?: boolean;
 }
 
 // P1 remote execution (design.md §5, §6).

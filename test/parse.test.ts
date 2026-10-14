@@ -84,6 +84,29 @@ describe("toFacts", () => {
 		expect(facts.model).toBeNull();
 		expect(facts.memAvailableB).toBeNull();
 	});
+
+	test("updates: an empty section is zero pending, a missing one is unknown; repos keep tabs in paths", () => {
+		const parsed = toFacts(
+			parseSections(
+				[
+					"@@ brew_outdated",
+					"@@ repos",
+					"ok\t3\t\trepos/a",
+					"ok\t0\t2\trepos/with\ttab",
+					"missing\t\t\trepos/gone",
+					"bogus\tline",
+					"@@ end",
+				].join("\n"),
+			).sections,
+		);
+		expect(parsed.updates).toEqual({ brew: [], pacman: null });
+		expect(parsed.repos).toEqual([
+			{ path: "repos/a", state: "ok", dirty: 3, ahead: null },
+			{ path: "repos/with\ttab", state: "ok", dirty: 0, ahead: 2 },
+			{ path: "repos/gone", state: "missing", dirty: null, ahead: null },
+		]);
+		expect(facts.repos).toBeNull();
+	});
 });
 
 describe("toInventory", () => {

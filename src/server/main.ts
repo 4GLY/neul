@@ -4,9 +4,11 @@ import type { Server } from "bun";
 import { probe } from "../collector/run.ts";
 import type {
 	AddMachineRequest,
+	AlertRules,
 	ExecEvent,
 	ExecRequest,
 	Platform,
+	PushSubscriptionInput,
 	SavedCommandInput,
 	Settings,
 	Transport,
@@ -21,6 +23,8 @@ import {
 	Executor,
 } from "./exec.ts";
 import { Hub } from "./hub.ts";
+import { Monitor } from "./monitor.ts";
+import { Pusher } from "./push.ts";
 
 const port = Number(process.env.NEUL_PORT ?? 7430);
 const hostname = process.env.NEUL_HOST ?? "127.0.0.1";
@@ -34,7 +38,15 @@ const allowedLogins = new Set(
 );
 
 const store = new Store(dbPath);
-const hub = new Hub(store);
+// Push services require a contact in the VAPID claims; the hub owner's login is the natural one.
+const contact = [...allowedLogins].find((login) => login.includes("@"));
+const pusher = new Pusher(
+	store,
+	process.env.NEUL_VAPID_SUBJECT ??
+		(contact ? `mailto:${contact}` : "https://github.com/4GLY/neul"),
+);
+const monitor = new Monitor(store, pusher);
+const hub = new Hub(store, (...args) => monitor.afterRun(...args));
 const executor = new Executor(store);
 const interrupted = store.interruptExecRuns(new Date().toISOString());
 if (interrupted)
@@ -144,20 +156,57 @@ async function addMachine(req: Request) {
 	return hub.summary(machine);
 }
 
-function validSettings(body: Partial<Settings>): Settings {
-	const paths = body.trackedPaths;
-	if (!Array.isArray(paths) || paths.some((p) => typeof p !== "string")) {
-		throw new HttpError(400, "trackedPaths는 문자열 배열이어야 합니다");
+function relativePaths(value: unknown, label: string): string[] {
+	if (!Array.isArray(value) || value.some((p) => typeof p !== "string")) {
+		throw new HttpError(400, `${label}는 문자열 배열이어야 합니다`);
 	}
-	const trackedPaths = paths.map((p) => p.trim()).filter(Boolean);
+	const paths = value.map((p: string) => p.trim()).filter(Boolean);
+	if (paths.some((p) => p.startsWith("/") || p.split("/").includes(".."))) {
+		throw new HttpError(
+			400,
+			`${label}는 홈 디렉터리 기준 상대 경로여야 합니다 (/, .. 불가)`,
+		);
+	}
+	return paths;
+}
+
+function threshold(
+	value: unknown,
+	label: string,
+	min: number,
+	max: number,
+): number | null {
+	if (value === null) return null;
 	if (
-		trackedPaths.some((p) => p.startsWith("/") || p.split("/").includes(".."))
+		typeof value !== "number" ||
+		!Number.isInteger(value) ||
+		value < min ||
+		value > max
 	) {
 		throw new HttpError(
 			400,
-			"추적 경로는 홈 디렉터리 기준 상대 경로여야 합니다 (/, .. 불가)",
+			`${label}은(는) ${min}~${max} 사이 정수이거나 꺼져 있어야 합니다`,
 		);
 	}
+	return value;
+}
+
+function validAlertRules(body: Partial<AlertRules> | undefined): AlertRules {
+	if (!body || typeof body !== "object")
+		throw new HttpError(400, "alertRules가 필요합니다");
+	if (typeof body.trackedFiles !== "boolean")
+		throw new HttpError(400, "trackedFiles는 true/false여야 합니다");
+	return {
+		unreachableMin: threshold(body.unreachableMin, "연결 끊김 기준", 1, 10080),
+		diskPercent: threshold(body.diskPercent, "디스크 기준", 1, 100),
+		updatesCount: threshold(body.updatesCount, "업데이트 기준", 1, 10000),
+		trackedFiles: body.trackedFiles,
+		repos: relativePaths(body.repos, "저장소 경로"),
+	};
+}
+
+function validSettings(body: Partial<Settings>): Settings {
+	const trackedPaths = relativePaths(body.trackedPaths, "추적 경로");
 	const interval = body.collectIntervalMin;
 	if (
 		typeof interval !== "number" ||
@@ -167,7 +216,38 @@ function validSettings(body: Partial<Settings>): Settings {
 	) {
 		throw new HttpError(400, "수집 주기는 1~1440분 사이 정수여야 합니다");
 	}
-	return { trackedPaths, collectIntervalMin: interval };
+	return {
+		trackedPaths,
+		collectIntervalMin: interval,
+		alertRules: validAlertRules(body.alertRules),
+	};
+}
+
+function validSubscription(body: Partial<PushSubscriptionInput>) {
+	const { endpoint, keys } = body;
+	if (
+		typeof endpoint !== "string" ||
+		!endpoint.startsWith("https://") ||
+		typeof keys?.p256dh !== "string" ||
+		typeof keys.auth !== "string"
+	) {
+		throw new HttpError(400, "푸시 구독 정보가 올바르지 않습니다");
+	}
+	return { endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } };
+}
+
+const PUBLIC_DIR = new URL("../web/public/", import.meta.url);
+
+/**
+ * Files that need fixed root paths: the service worker's scope is its own path, and the manifest
+ * (bundled from index.html) refers to the icons by absolute URL.
+ */
+function publicFile(name: string, type: string) {
+	const file = Bun.file(new URL(name, PUBLIC_DIR));
+	return () =>
+		new Response(file, {
+			headers: { "Content-Type": type, "Cache-Control": "no-cache" },
+		});
 }
 
 const MAX_COMMAND_LENGTH = 64 * 1024;
@@ -319,6 +399,9 @@ const server = Bun.serve({
 	idleTimeout: 120,
 	routes: {
 		"/*": index,
+		"/sw.js": publicFile("sw.js", "text/javascript; charset=utf-8"),
+		"/icon-192.png": publicFile("icon-192.png", "image/png"),
+		"/icon-512.png": publicFile("icon-512.png", "image/png"),
 		"/api/*": api(() => {
 			throw new HttpError(404, "없는 API입니다");
 		}),
@@ -346,10 +429,16 @@ const server = Bun.serve({
 				) {
 					throw new HttpError(400, `이미 같은 이름의 머신이 있습니다: ${name}`);
 				}
+				if (
+					body.notifyUnreachable !== undefined &&
+					typeof body.notifyUnreachable !== "boolean"
+				)
+					throw new HttpError(400, "notifyUnreachable은 true/false여야 합니다");
 				store.updateMachine(machine.id, {
 					name,
 					enabled: body.enabled,
 					platform: body.platform,
+					notifyUnreachable: body.notifyUnreachable,
 				});
 				return hub.summary(machineParam(req));
 			}),
@@ -406,6 +495,39 @@ const server = Bun.serve({
 				return store.addSavedCommand(name, command);
 			}),
 		},
+		"/api/alerts": api((req) => {
+			const state = new URL(req.url).searchParams.get("state") ?? "open";
+			if (state !== "open" && state !== "all")
+				throw new HttpError(400, "state는 open 또는 all이어야 합니다");
+			return store.listAlerts(state === "all");
+		}),
+		"/api/push/key": api(() => ({ publicKey: pusher.publicKey() })),
+		"/api/push/subscriptions": {
+			POST: api(async (req) => {
+				const sub = validSubscription(
+					await readJson<Partial<PushSubscriptionInput>>(req),
+				);
+				store.putPushSubscription(sub, req.headers.get("User-Agent"));
+				return { ok: true };
+			}),
+			DELETE: api(async (req) => {
+				const { endpoint } = await readJson<{ endpoint?: unknown }>(req);
+				if (typeof endpoint !== "string")
+					throw new HttpError(400, "endpoint가 필요합니다");
+				store.deletePushSubscription(endpoint);
+				return { ok: true };
+			}),
+		},
+		"/api/push/test": {
+			POST: api(() =>
+				pusher.send({
+					title: "늘 · 테스트 알림",
+					body: "이 기기에서 허브 알림을 받을 수 있습니다.",
+					url: "/#/alerts",
+					tag: "test",
+				}),
+			),
+		},
 		"/api/commands/:id": {
 			PATCH: api(async (req) => {
 				const saved = savedCommandParam(req);
@@ -438,6 +560,10 @@ function collectDue(): void {
 }
 
 collectDue();
-setInterval(collectDue, 30_000);
+monitor.tick(Date.now());
+setInterval(() => {
+	collectDue();
+	monitor.tick(Date.now());
+}, 30_000);
 
 console.log(`neul hub on ${server.url} (db ${dbPath})`);

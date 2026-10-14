@@ -5,6 +5,7 @@ import type {
 	Inventory,
 	MiseTool,
 	PacmanPackage,
+	RepoStatus,
 	TrackedFile,
 } from "../shared/types.ts";
 
@@ -86,7 +87,28 @@ export function toFacts(sections: Map<string, string[]>): Facts {
 		battery: battery
 			? { percent: Number(battery[1]), state: (battery[2] ?? "").trim() }
 			: null,
+		updates: {
+			brew: sections.get("brew_outdated") ?? null,
+			pacman: sections.get("pacman_updates") ?? null,
+		},
+		repos: repoStatuses(sections.get("repos")),
 	};
+}
+
+function repoStatuses(lines: string[] | undefined): RepoStatus[] | null {
+	if (!lines) return null;
+	return lines.flatMap((line): RepoStatus[] => {
+		const [state, dirty, ahead, ...path] = line.split("\t");
+		if ((state !== "ok" && state !== "missing") || path.length === 0) return [];
+		return [
+			{
+				path: path.join("\t"),
+				state,
+				dirty: dirty ? num(dirty) : null,
+				ahead: ahead ? num(ahead) : null,
+			},
+		];
+	});
 }
 
 function byName<T extends { name: string }>(a: T, b: T): number {

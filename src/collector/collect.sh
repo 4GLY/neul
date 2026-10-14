@@ -1,6 +1,6 @@
-# neul collector (POSIX sh). Sent over stdin: `ssh <host> sh -s -- <path-pattern>...`.
+# neul collector (POSIX sh). Sent over stdin: `ssh <host> sh -s -- <repo count> <repo>... <path pattern>...`.
 # Prints `@@ <section>` headers followed by section lines. Read-only: never mutates the host.
-# Path patterns are relative to $HOME and may contain shell globs (e.g. .ssh/config.d/*.conf).
+# Repos and path patterns are relative to $HOME; patterns may contain shell globs (e.g. .ssh/config.d/*.conf).
 
 export LC_ALL=C
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_ANALYTICS=1
@@ -81,6 +81,9 @@ if have brew; then
     for v in "$d"*; do [ -d "$v" ] && printf ' %s' "$(basename "$v")"; done
     printf '\n'
   done
+  # Uses the formula/cask metadata from the last `brew update`; HOMEBREW_NO_AUTO_UPDATE keeps this read-only.
+  echo "@@ brew_outdated"
+  brew outdated --quiet 2>/dev/null
 fi
 
 if have pacman; then
@@ -88,11 +91,43 @@ if have pacman; then
   pacman -Qe 2>/dev/null
   echo "@@ pacman_count"
   pacman -Q 2>/dev/null | wc -l | tr -d ' '
+  # checkupdates syncs into a temporary database, never the system one. Exit 2 = no updates;
+  # any other failure (e.g. offline) omits the section so the count stays unknown.
+  if have checkupdates; then
+    updates=$(checkupdates 2>/dev/null)
+    case $? in
+      0 | 2)
+        echo "@@ pacman_updates"
+        printf '%s\n' "$updates" | cut -d' ' -f1
+        ;;
+    esac
+  fi
 fi
 
 if have mise; then
   echo "@@ mise_json"
   mise ls --json 2>/dev/null
+fi
+
+# One tab-separated line per repo: state, uncommitted entries, commits ahead of upstream, path.
+# GIT_OPTIONAL_LOCKS=0 stops `git status` from refreshing the index.
+nrepos=${1:-0}
+[ "$#" -gt 0 ] && shift
+if [ "$nrepos" -gt 0 ]; then
+  echo "@@ repos"
+  i=0
+  while [ "$i" -lt "$nrepos" ] && [ "$#" -gt 0 ]; do
+    r=$1
+    shift
+    i=$((i + 1))
+    if have git && GIT_OPTIONAL_LOCKS=0 git -C "$HOME/$r" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      dirty=$(GIT_OPTIONAL_LOCKS=0 git -C "$HOME/$r" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+      ahead=$(git -C "$HOME/$r" rev-list --count '@{upstream}..HEAD' 2>/dev/null)
+      printf 'ok\t%s\t%s\t%s\n' "$dirty" "$ahead" "$r"
+    else
+      printf 'missing\t\t\t%s\n' "$r"
+    fi
+  done
 fi
 
 if [ "$#" -gt 0 ]; then

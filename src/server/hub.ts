@@ -29,10 +29,22 @@ function counts(inv: Inventory): InventoryCounts {
 	};
 }
 
+/** Called after every recorded collection with the inventory before and after it. */
+export type RunListener = (
+	machine: MachineRow,
+	run: RunSummary,
+	facts: Facts | null,
+	previous: Inventory | null,
+	current: Inventory | null,
+) => void;
+
 export class Hub {
 	private readonly inFlight = new Map<number, Promise<RunSummary>>();
 
-	constructor(readonly store: Store) {}
+	constructor(
+		readonly store: Store,
+		private readonly onRun: RunListener,
+	) {}
 
 	isCollecting(machineId: number): boolean {
 		return this.inFlight.has(machineId);
@@ -56,9 +68,11 @@ export class Hub {
 		let facts: Facts | null = null;
 		let inventory: Inventory | null = null;
 		try {
+			const settings = this.store.getSettings();
 			const result = await runCollector(
 				machine,
-				this.store.getSettings().trackedPaths,
+				settings.trackedPaths,
+				settings.alertRules.repos,
 			);
 			const failure = processStatus(machine, result);
 			if (failure) {
@@ -74,7 +88,8 @@ export class Hub {
 			status = "error";
 			error = e instanceof Error ? e.message : String(e);
 		}
-		return this.store.recordRun({
+		const previous = this.store.latestInventory(machine.id)?.inventory ?? null;
+		const run = this.store.recordRun({
 			machineId: machine.id,
 			startedAt,
 			finishedAt: new Date().toISOString(),
@@ -83,6 +98,12 @@ export class Hub {
 			facts,
 			inventory,
 		});
+		try {
+			this.onRun(machine, run, facts, previous, inventory);
+		} catch (e) {
+			console.error(`alert evaluation for ${machine.name} failed:`, e);
+		}
+		return run;
 	}
 
 	collectAll(): Promise<RunSummary[]> {
@@ -105,6 +126,7 @@ export class Hub {
 			transport: machine.transport,
 			platform: machine.platform,
 			enabled: machine.enabled === 1,
+			notifyUnreachable: machine.notify_unreachable === 1,
 			status: lastRun ? STATUS_BY_RUN[lastRun.status] : "unknown",
 			collecting: this.isCollecting(machine.id),
 			lastRun,

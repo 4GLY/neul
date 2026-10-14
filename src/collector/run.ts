@@ -51,7 +51,12 @@ async function spawnWithInput(
 	return { exitCode: proc.signalCode ? null : exitCode, stdout, stderr };
 }
 
-function collectCommand(target: Target, trackedPaths: string[]): string[] {
+/** Collector arguments: the repo count, the repos, then the tracked path patterns. */
+function collectCommand(
+	target: Target,
+	trackedPaths: string[],
+	repos: string[],
+): string[] {
 	if (target.platform === "windows") {
 		return [
 			"ssh",
@@ -60,21 +65,23 @@ function collectCommand(target: Target, trackedPaths: string[]): string[] {
 			"powershell -NoProfile -NonInteractive -Command -",
 		];
 	}
-	if (target.transport === "local") return ["sh", "-s", "--", ...trackedPaths];
-	// The remote side joins arguments into one shell command line, so quote each pattern for sh
+	const args = [String(repos.length), ...repos, ...trackedPaths];
+	if (target.transport === "local") return ["sh", "-s", "--", ...args];
+	// The remote side joins arguments into one shell command line, so quote each argument for sh
 	// while leaving globs unexpanded until the script loops over them.
-	const quoted = trackedPaths.map((p) => `'${p.replaceAll("'", `'\\''`)}'`);
+	const quoted = args.map((p) => `'${p.replaceAll("'", `'\\''`)}'`);
 	return ["ssh", ...SSH_OPTIONS, target.alias, "sh", "-s", "--", ...quoted];
 }
 
 export async function runCollector(
 	target: Target,
 	trackedPaths: string[],
+	repos: string[],
 	timeoutMs = COLLECT_TIMEOUT_MS,
 ): Promise<ProcessResult> {
 	const script = target.platform === "windows" ? windowsScript : posixScript;
 	return spawnWithInput(
-		collectCommand(target, trackedPaths),
+		collectCommand(target, trackedPaths, repos),
 		script,
 		timeoutMs,
 	);

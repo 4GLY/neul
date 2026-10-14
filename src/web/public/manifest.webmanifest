@@ -1,0 +1,25 @@
+{
+	"name": "늘 · 개발 머신 허브",
+	"short_name": "늘",
+	"description": "내 개발 머신의 상태와 인벤토리를 한 곳에서 확인합니다.",
+	"lang": "ko",
+	"start_url": "/#/",
+	"scope": "/",
+	"display": "standalone",
+	"background_color": "#f5f6f4",
+	"theme_color": "#17634e",
+	"icons": [
+		{
+			"src": "/icon-192.png",
+			"sizes": "192x192",
+			"type": "image/png",
+			"purpose": "any maskable"
+		},
+		{
+			"src": "/icon-512.png",
+			"sizes": "512x512",
+			"type": "image/png",
+			"purpose": "any maskable"
+		}
+	]
+}

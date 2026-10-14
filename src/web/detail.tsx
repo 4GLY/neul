@@ -160,6 +160,30 @@ export function Detail({ id }: { id: number }) {
 									? `${facts.battery.percent}% · ${facts.battery.state}`
 									: "—"}
 							</Fact>
+							<Fact label="업데이트 대기">
+								{[
+									facts.updates.brew
+										? `brew ${facts.updates.brew.length}`
+										: null,
+									facts.updates.pacman
+										? `pacman ${facts.updates.pacman.length}`
+										: null,
+								]
+									.filter(Boolean)
+									.join(" · ")}
+							</Fact>
+							<Fact label="감시 저장소">
+								{facts.repos?.length
+									? facts.repos.map((repo) => (
+											<span key={repo.path} className="fact-line">
+												{repo.path}{" "}
+												{repo.state === "missing"
+													? "· 없음"
+													: `· 변경 ${repo.dirty ?? "—"} · push 대기 ${repo.ahead ?? "—"}`}
+											</span>
+										))
+									: null}
+							</Fact>
 						</dl>
 						<div className="resource-details">
 							<div>
@@ -324,6 +348,7 @@ function EditMachine({
 				name: String(values.get("name")).trim(),
 				platform: values.get("platform") as Platform,
 				enabled: values.get("enabled") === "on",
+				notifyUnreachable: values.get("notifyUnreachable") === "on",
 			});
 			onSaved();
 		} catch (cause) {
@@ -360,6 +385,14 @@ function EditMachine({
 							defaultChecked={machine.enabled}
 						/>
 						주기 수집 활성
+					</label>
+					<label className="checkbox-label">
+						<input
+							type="checkbox"
+							name="notifyUnreachable"
+							defaultChecked={machine.notifyUnreachable}
+						/>
+						연결 끊김 알림 (잠자는 노트북은 끄기)
 					</label>
 				</fieldset>
 				<ErrorNotice message={error} />

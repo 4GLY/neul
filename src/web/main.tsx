@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import type { Alert } from "../shared/types";
+import { Alerts } from "./alerts";
 import { Compare } from "./compare";
 import { Detail } from "./detail";
 import { ExecPage, ExecRunView } from "./exec";
@@ -9,18 +11,23 @@ import { Empty, useResource } from "./ui";
 import "./styles.css";
 
 const PAGE_TITLES: Record<
-	"machines" | "compare" | "exec" | "settings",
+	"machines" | "compare" | "exec" | "alerts" | "settings",
 	string
 > = {
 	machines: "내 머신",
 	compare: "머신 비교",
 	exec: "원격 실행",
+	alerts: "알림",
 	settings: "허브 설정",
 };
 
 function App() {
 	const [route, setRoute] = useState(window.location.hash.slice(1) || "/");
 	const { data: identity } = useResource<{ login: string }>("/api/me");
+	const { data: openAlerts } = useResource<Alert[]>(
+		"/api/alerts?state=open",
+		60_000,
+	);
 	useEffect(() => {
 		const change = () => {
 			setRoute(window.location.hash.slice(1) || "/");
@@ -36,9 +43,11 @@ function App() {
 			? "compare"
 			: route === "/settings"
 				? "settings"
-				: route === "/exec" || execMatch
-					? "exec"
-					: "machines";
+				: route === "/alerts"
+					? "alerts"
+					: route === "/exec" || execMatch
+						? "exec"
+						: "machines";
 	useEffect(() => {
 		document.title = `${PAGE_TITLES[page]} · 늘`;
 	}, [page]);
@@ -80,6 +89,19 @@ function App() {
 							실행
 						</a>
 						<a
+							href="#/alerts"
+							className={page === "alerts" ? "active" : ""}
+							aria-current={page === "alerts" ? "page" : undefined}
+						>
+							알림
+							{openAlerts?.length ? (
+								<span className="nav-badge mono">
+									{openAlerts.length}
+									<span className="sr-only">개 열림</span>
+								</span>
+							) : null}
+						</a>
+						<a
 							href="#/settings"
 							className={page === "settings" ? "active" : ""}
 							aria-current={page === "settings" ? "page" : undefined}
@@ -106,6 +128,8 @@ function App() {
 					<ExecPage />
 				) : execMatch ? (
 					<ExecRunView key={execMatch[1]} id={Number(execMatch[1])} />
+				) : route === "/alerts" ? (
+					<Alerts />
 				) : route === "/settings" ? (
 					<Settings />
 				) : (
@@ -118,10 +142,18 @@ function App() {
 				<span>
 					늘 <span className="separator">/</span> 개인 개발 환경 관측소
 				</span>
-				<span className="mono">INVENTORY · REMOTE EXEC</span>
+				<span className="mono">INVENTORY · REMOTE EXEC · ALERTS</span>
 			</footer>
 		</>
 	);
+}
+
+// The service worker only receives pushes (src/web/public/sw.js); registering on every load
+// keeps an existing subscription alive after the worker script changes.
+if ("serviceWorker" in navigator) {
+	navigator.serviceWorker
+		.register("/sw.js")
+		.catch((e) => console.error("service worker registration failed:", e));
 }
 
 const root = document.getElementById("root");

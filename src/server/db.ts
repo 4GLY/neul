@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
+	Alert,
+	AlertRule,
 	ExecChunk,
 	ExecRunDetail,
 	ExecRunSummary,
@@ -11,6 +13,7 @@ import type {
 	Facts,
 	Inventory,
 	Platform,
+	PushSubscriptionInput,
 	RunStatus,
 	RunSummary,
 	SavedCommand,
@@ -83,10 +86,35 @@ CREATE TABLE IF NOT EXISTS saved_commands (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS alerts (
+  id INTEGER PRIMARY KEY,
+  machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
+  rule TEXT NOT NULL CHECK (rule IN ('unreachable','disk','updates','repo','files')),
+  subject TEXT NOT NULL,
+  message TEXT NOT NULL,
+  opened_at TEXT NOT NULL,
+  resolved_at TEXT,
+  notified_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_open ON alerts (machine_id, rule, subject) WHERE resolved_at IS NULL;
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INTEGER PRIMARY KEY,
+  endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TEXT NOT NULL
+);
 `;
+
+/** Columns added after a table first shipped: [table, column, definition]. */
+const ADDED_COLUMNS: [string, string, string][] = [
+	["machines", "notify_unreachable", "INTEGER NOT NULL DEFAULT 1"],
+];
 
 export const RUNS_KEPT_PER_MACHINE = 2000;
 export const EXEC_RUNS_KEPT = 500;
+export const RESOLVED_ALERTS_KEPT = 1000;
 
 export const DEFAULT_SETTINGS: Settings = {
 	trackedPaths: [
@@ -103,6 +131,13 @@ export const DEFAULT_SETTINGS: Settings = {
 		".config/ghostty/config",
 	],
 	collectIntervalMin: 10,
+	alertRules: {
+		unreachableMin: 30,
+		diskPercent: 90,
+		updatesCount: 20,
+		trackedFiles: true,
+		repos: [],
+	},
 };
 
 export interface MachineRow {
@@ -112,6 +147,7 @@ export interface MachineRow {
 	transport: Transport;
 	platform: Platform;
 	enabled: number;
+	notify_unreachable: number;
 	created_at: string;
 }
 
@@ -231,6 +267,53 @@ function toSavedCommand(row: SavedCommandRow): SavedCommand {
 	};
 }
 
+export interface AlertCondition {
+	rule: AlertRule;
+	subject: string;
+	message: string;
+}
+
+export interface VapidKeys {
+	publicKey: string;
+	privateKey: string;
+}
+
+export interface PushSubscriptionRow {
+	id: number;
+	endpoint: string;
+	p256dh: string;
+	auth: string;
+	user_agent: string | null;
+	created_at: string;
+}
+
+interface AlertRow {
+	id: number;
+	machine_id: number;
+	machine_name: string;
+	rule: AlertRule;
+	subject: string;
+	message: string;
+	opened_at: string;
+	resolved_at: string | null;
+}
+
+const ALERT_SELECT =
+	"SELECT a.id, a.machine_id, m.name AS machine_name, a.rule, a.subject, a.message, a.opened_at, a.resolved_at FROM alerts a JOIN machines m ON m.id = a.machine_id";
+
+function toAlert(row: AlertRow): Alert {
+	return {
+		id: row.id,
+		machineId: row.machine_id,
+		machineName: row.machine_name,
+		rule: row.rule,
+		subject: row.subject,
+		message: row.message,
+		openedAt: row.opened_at,
+		resolvedAt: row.resolved_at,
+	};
+}
+
 export class Store {
 	readonly db: Database;
 
@@ -240,6 +323,13 @@ export class Store {
 		this.db.run("PRAGMA journal_mode = WAL");
 		this.db.run("PRAGMA foreign_keys = ON");
 		this.db.run(SCHEMA);
+		for (const [table, column, definition] of ADDED_COLUMNS) {
+			const columns = this.db
+				.query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+				.all();
+			if (!columns.some((c) => c.name === column))
+				this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+		}
 	}
 
 	listMachines(): MachineRow[] {
@@ -271,18 +361,26 @@ export class Store {
 
 	updateMachine(
 		id: number,
-		patch: { name?: string; enabled?: boolean; platform?: Platform },
+		patch: {
+			name?: string;
+			enabled?: boolean;
+			platform?: Platform;
+			notifyUnreachable?: boolean;
+		},
 	): void {
 		const current = this.getMachine(id);
 		if (!current) return;
+		const flag = (value: boolean | undefined, fallback: number) =>
+			value === undefined ? fallback : value ? 1 : 0;
 		this.db
 			.query(
-				"UPDATE machines SET name = ?, enabled = ?, platform = ? WHERE id = ?",
+				"UPDATE machines SET name = ?, enabled = ?, platform = ?, notify_unreachable = ? WHERE id = ?",
 			)
 			.run(
 				patch.name ?? current.name,
-				patch.enabled === undefined ? current.enabled : patch.enabled ? 1 : 0,
+				flag(patch.enabled, current.enabled),
 				patch.platform ?? current.platform,
+				flag(patch.notifyUnreachable, current.notify_unreachable),
 				id,
 			);
 	}
@@ -408,35 +506,196 @@ export class Store {
 				"SELECT * FROM runs WHERE machine_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1",
 			)
 			.get(machineId);
-		return row
+		if (!row) return null;
+		// Runs recorded before P2 have no updates/repos in their facts.
+		const facts: Facts | null = row.facts_json
 			? {
-					finishedAt: row.finished_at,
-					facts: row.facts_json ? JSON.parse(row.facts_json) : null,
+					updates: { brew: null, pacman: null },
+					repos: null,
+					...JSON.parse(row.facts_json),
 				}
 			: null;
+		return { finishedAt: row.finished_at, facts };
 	}
 
+	private readValue<T>(key: string): T | undefined {
+		const row = this.db
+			.query<{ value_json: string }, [string]>(
+				"SELECT value_json FROM settings WHERE key = ?",
+			)
+			.get(key);
+		return row ? (JSON.parse(row.value_json) as T) : undefined;
+	}
+
+	private writeValue(key: string, value: unknown): void {
+		this.db
+			.query(
+				"INSERT INTO settings (key, value_json) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json",
+			)
+			.run(key, JSON.stringify(value));
+	}
+
+	/** Only the Settings keys: the table also holds hub secrets that the API must not return. */
 	getSettings(): Settings {
-		const rows = this.db
-			.query<{ key: string; value_json: string }, []>("SELECT * FROM settings")
-			.all();
-		const stored = Object.fromEntries(
-			rows.map((r) => [r.key, JSON.parse(r.value_json)]),
-		);
-		return { ...DEFAULT_SETTINGS, ...stored };
+		return {
+			trackedPaths:
+				this.readValue<string[]>("trackedPaths") ??
+				DEFAULT_SETTINGS.trackedPaths,
+			collectIntervalMin:
+				this.readValue<number>("collectIntervalMin") ??
+				DEFAULT_SETTINGS.collectIntervalMin,
+			alertRules: {
+				...DEFAULT_SETTINGS.alertRules,
+				...this.readValue<Partial<Settings["alertRules"]>>("alertRules"),
+			},
+		};
 	}
 
 	putSettings(settings: Settings): void {
-		const upsert = this.db.query(
-			"INSERT INTO settings (key, value_json) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value_json = excluded.value_json",
-		);
 		this.db.transaction(() => {
-			upsert.run("trackedPaths", JSON.stringify(settings.trackedPaths));
-			upsert.run(
-				"collectIntervalMin",
-				JSON.stringify(settings.collectIntervalMin),
-			);
+			this.writeValue("trackedPaths", settings.trackedPaths);
+			this.writeValue("collectIntervalMin", settings.collectIntervalMin);
+			this.writeValue("alertRules", settings.alertRules);
 		})();
+	}
+
+	getVapidKeys(): VapidKeys | null {
+		return this.readValue<VapidKeys>("vapidKeys") ?? null;
+	}
+
+	putVapidKeys(keys: VapidKeys): void {
+		this.writeValue("vapidKeys", keys);
+	}
+
+	/**
+	 * Reconcile a machine's open alerts with the conditions that hold now. Only rules in
+	 * `evaluated` are touched, so a rule that could not be checked (no facts) stays as it was.
+	 * Returns the alerts opened by this call.
+	 */
+	syncAlerts(
+		machineId: number,
+		evaluated: AlertRule[],
+		active: AlertCondition[],
+		at: string,
+	): Alert[] {
+		return this.db.transaction(() => {
+			const key = (rule: string, subject: string) => `${rule}\u0000${subject}`;
+			const open = new Map(
+				this.db
+					.query<AlertRow, [number]>(
+						`${ALERT_SELECT} WHERE a.machine_id = ? AND a.resolved_at IS NULL`,
+					)
+					.all(machineId)
+					.map((row) => [key(row.rule, row.subject), row]),
+			);
+			const opened: Alert[] = [];
+			for (const c of active) {
+				const existing = open.get(key(c.rule, c.subject));
+				if (existing) {
+					open.delete(key(c.rule, c.subject));
+					if (existing.message !== c.message)
+						this.db
+							.query("UPDATE alerts SET message = ? WHERE id = ?")
+							.run(c.message, existing.id);
+					continue;
+				}
+				opened.push(this.insertAlert(machineId, c, at, null));
+			}
+			const resolve = this.db.query(
+				"UPDATE alerts SET resolved_at = ? WHERE id = ?",
+			);
+			for (const row of open.values()) {
+				if (evaluated.includes(row.rule)) resolve.run(at, row.id);
+			}
+			return opened;
+		})();
+	}
+
+	/** A one-off event alert (tracked file change): opened and resolved at once. */
+	recordAlertEvent(
+		machineId: number,
+		condition: AlertCondition,
+		at: string,
+	): Alert {
+		return this.insertAlert(machineId, condition, at, at);
+	}
+
+	private insertAlert(
+		machineId: number,
+		c: AlertCondition,
+		at: string,
+		resolvedAt: string | null,
+	): Alert {
+		const row = this.db
+			.query<
+				{ id: number },
+				[number, AlertRule, string, string, string, string | null]
+			>(
+				"INSERT INTO alerts (machine_id, rule, subject, message, opened_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+			)
+			.get(machineId, c.rule, c.subject, c.message, at, resolvedAt);
+		if (!row) throw new Error("alert insert returned no row");
+		this.db
+			.query(
+				`DELETE FROM alerts WHERE resolved_at IS NOT NULL AND id NOT IN
+           (SELECT id FROM alerts WHERE resolved_at IS NOT NULL ORDER BY id DESC LIMIT ?)`,
+			)
+			.run(RESOLVED_ALERTS_KEPT);
+		const alert = this.getAlert(row.id);
+		if (!alert) throw new Error("alert vanished after insert");
+		return alert;
+	}
+
+	getAlert(id: number): Alert | null {
+		const row = this.db
+			.query<AlertRow, [number]>(`${ALERT_SELECT} WHERE a.id = ?`)
+			.get(id);
+		return row ? toAlert(row) : null;
+	}
+
+	/** Open alerts first (newest first), then resolved ones when `includeResolved`. */
+	listAlerts(includeResolved: boolean, limit = 200): Alert[] {
+		return this.db
+			.query<AlertRow, [number]>(
+				`${ALERT_SELECT} ${includeResolved ? "" : "WHERE a.resolved_at IS NULL"}
+         ORDER BY a.resolved_at IS NOT NULL, a.id DESC LIMIT ?`,
+			)
+			.all(limit)
+			.map(toAlert);
+	}
+
+	markAlertNotified(id: number, at: string): void {
+		this.db.query("UPDATE alerts SET notified_at = ? WHERE id = ?").run(at, id);
+	}
+
+	listPushSubscriptions(): PushSubscriptionRow[] {
+		return this.db
+			.query<PushSubscriptionRow, []>("SELECT * FROM push_subscriptions")
+			.all();
+	}
+
+	putPushSubscription(
+		sub: PushSubscriptionInput,
+		userAgent: string | null,
+	): void {
+		this.db
+			.query(
+				`INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent, created_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, user_agent = excluded.user_agent`,
+			)
+			.run(
+				sub.endpoint,
+				sub.keys.p256dh,
+				sub.keys.auth,
+				userAgent,
+				new Date().toISOString(),
+			);
+	}
+
+	deletePushSubscription(endpoint: string): void {
+		this.db
+			.query("DELETE FROM push_subscriptions WHERE endpoint = ?")
+			.run(endpoint);
 	}
 
 	/**

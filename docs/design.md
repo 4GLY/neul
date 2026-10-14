@@ -3,7 +3,7 @@
 > **늘**: 내 개발 머신들을 한 곳에서 보고, 맞추고, 실행하고, 지켜본다.
 
 - 작성: 2026-10-14
-- 상태: P0 배포, P1 구현
+- 상태: P0·P1 배포, P2 구현
 - 이전 버전: `archive/v1` 태그 (Go server/agent + React, 2026-05~07)
 
 ## 1. v1에서 배운 것
@@ -57,7 +57,7 @@ flowchart LR
   - `local`: 허브 머신 자신. `sh -s`를 직접 spawn.
   - `ssh`: 시스템 `ssh` 명령. 사용자 `~/.ssh/config`의 별칭·키를 그대로 쓴다. 항상 `-o BatchMode=yes -o ConnectTimeout=10`.
 - **플랫폼**: `posix`(macOS·Linux) 또는 `windows`. 등록할 때 자동 판별하고 사용자가 바꿀 수 있다.
-- **보고 스크립트 (P2, 선택)**: 잠자기·네트워크 단절 동안의 이벤트를 허브에 밀어 넣는 짧은 셸 스크립트(launchd/systemd 타이머 + `curl`). 허브 쪽 기능이 이것에 의존하지 않는다.
+- **보고 스크립트 (선택, 미구현)**: 잠자기·네트워크 단절 동안의 이벤트를 허브에 밀어 넣는 짧은 셸 스크립트(launchd/systemd 타이머 + `curl`). 허브 쪽 기능이 이것에 의존하지 않는다.
 - **인증**: 허브는 `127.0.0.1`에만 바인딩하고 `tailscale serve`로 tailnet에 HTTPS 공개한다.
   - 요청에 `Tailscale-User-Login` 헤더가 있으면 `NEUL_ALLOWED_LOGINS`(쉼표 구분)에 들어 있어야 한다. 아니면 403.
   - 헤더가 없으면 loopback 요청만 허용한다(허브 머신 위의 로컬 접근).
@@ -67,9 +67,9 @@ flowchart LR
 
 ### 4.1 프로토콜
 
-허브는 스크립트 본문을 stdin으로 보내고 경로 패턴을 인자로 넘긴다.
+허브는 스크립트 본문을 stdin으로 보내고 감시할 git 저장소와 경로 패턴을 인자로 넘긴다.
 
-- posix: `ssh <alias> sh -s -- <pattern>...` (local은 `sh -s -- <pattern>...`)
+- posix: `ssh <alias> sh -s -- <저장소 수> <저장소>... <pattern>...` (local은 `sh -s -- ...`)
 - windows: `ssh <alias> powershell -NoProfile -NonInteractive -Command -`
 
 스크립트(`src/collector/collect.sh`, `collect.ps1`)는 **읽기 전용**이며 다음 형식으로 출력한다.
@@ -92,6 +92,9 @@ flowchart LR
 | `pacman_count` | 전체 패키지 수 | pacman 있을 때 |
 | `mise_json` | `mise ls --json` 원문 | mise 있을 때 |
 | `files` | 탭 구분 `kind sha256 size link_target path`. kind는 `file`·`symlink`·`dir`·`broken`·`missing` | posix |
+| `brew_outdated` | `brew outdated --quiet` 이름 한 줄씩. 마지막 `brew update` 시점의 메타데이터 기준(`HOMEBREW_NO_AUTO_UPDATE`) | brew 있을 때 |
+| `pacman_updates` | `checkupdates` 이름 한 줄씩(임시 DB 동기화, 시스템 DB는 그대로). 실패하면 섹션 없음 = 알 수 없음 | `checkupdates` 있을 때 |
+| `repos` | 탭 구분 `state dirty ahead path`. state는 `ok`·`missing`, dirty는 `git status --porcelain` 줄 수, ahead는 upstream보다 앞선 커밋 수(upstream 없으면 빈 값). `GIT_OPTIONAL_LOCKS=0` | posix, 저장소 설정 시 |
 
 경로 패턴은 `$HOME` 기준 상대 경로이며 glob을 쓸 수 있다(`.ssh/config.d/*.conf`). 패턴이 아무것도 매치하지 않으면 `missing` 한 줄을 낸다.
 
@@ -118,7 +121,8 @@ machines(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, alias TEXT NOT NULL,
   transport TEXT NOT NULL CHECK (transport IN ('local','ssh')),
   platform  TEXT NOT NULL CHECK (platform IN ('posix','windows')),
-  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL)
+  enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL,
+  notify_unreachable INTEGER NOT NULL DEFAULT 1)  -- P2에서 ALTER TABLE로 추가
 
 inventories(
   id INTEGER PRIMARY KEY, machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
@@ -149,9 +153,20 @@ exec_targets(
 
 saved_commands(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, command TEXT NOT NULL,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
+
+-- P2 모니터링·알림
+alerts(
+  id INTEGER PRIMARY KEY, machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
+  rule TEXT NOT NULL CHECK (rule IN ('unreachable','disk','updates','repo','files')),
+  subject TEXT NOT NULL,  -- 디스크 경로·저장소 경로, 머신당 하나인 규칙은 ''
+  message TEXT NOT NULL, opened_at TEXT NOT NULL, resolved_at TEXT, notified_at TEXT)
+-- UNIQUE (machine_id, rule, subject) WHERE resolved_at IS NULL: 열린 알림은 하나
+
+push_subscriptions(id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL,
+  p256dh TEXT NOT NULL, auth TEXT NOT NULL, user_agent TEXT, created_at TEXT NOT NULL)
 ```
 
-설정 키: `trackedPaths`(string[]), `collectIntervalMin`(number, 기본 10).
+설정 키: `trackedPaths`(string[]), `collectIntervalMin`(number, 기본 10), `alertRules`(`{ unreachableMin, diskPercent, updatesCount }`는 숫자 또는 null=끔, 기본 30·90·20, `trackedFiles`(기본 true), `repos`(string[])). `vapidKeys`도 settings 테이블에 있지만 `GET /api/settings`로는 나가지 않는다.
 
 ## 6. API
 
@@ -175,13 +190,19 @@ saved_commands(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, command TEXT N
 | `GET /api/exec/:id/events` | SSE. 연결마다 `snapshot`(전체 상태)으로 시작하고 `chunk`·`exit`·`done`을 보낸다. 끝난 실행은 `snapshot` 뒤 바로 `done`. 15초마다 keepalive 주석 |
 | `POST /api/exec/:id/cancel` | 실행 중인 대상 모두 취소. 이미 끝났으면 409 |
 | `GET /api/commands`, `POST /api/commands`, `PATCH /api/commands/:id`, `DELETE /api/commands/:id` | 저장된 명령 `{ name, command }`. 이름은 고유 |
+| `GET /api/alerts?state=open\|all` | `Alert[]`. 열린 것 먼저, `all`이면 해결된 것 포함 최근 200건 |
+| `GET /api/push/key` | `{ publicKey }` VAPID 공개키(없으면 만든다) |
+| `POST /api/push/subscriptions`, `DELETE /api/push/subscriptions` | 이 기기의 `PushSubscription.toJSON()` 등록, `{ endpoint }`로 해제 |
+| `POST /api/push/test` | 구독한 모든 기기로 테스트 알림, `{ sent, failed }` |
+| `GET /sw.js`, `/icon-192.png`, `/icon-512.png` | PWA 파일(인증 없음). manifest와 apple-touch-icon은 `index.html` 번들 자산 |
 
 ## 7. 화면
 
 - **머신 목록**: 상태, OS, uptime, 부하, 메모리·디스크 사용률, 배터리, 패키지 수, 마지막 수집 시각. "전체 수집", "머신 추가".
-- **머신 상세**: facts, 최근 실행 기록(오류 메시지 포함), brew formula/cask(직접 설치 여부 표시), pacman, mise 도구(활성 버전), 추적 파일 해시. 검색 필터.
+- **머신 상세**: facts(업데이트 대기 수, 감시 저장소 상태 포함), 최근 실행 기록(오류 메시지 포함), brew formula/cask(직접 설치 여부 표시), pacman, mise 도구(활성 버전), 추적 파일 해시. 검색 필터. 편집에서 "연결 끊김 알림" 토글.
 - **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본.
-- **설정**: 추적 경로 패턴, 수집 주기.
+- **설정**: 추적 경로 패턴, 수집 주기, 알림 규칙(임계값·끄기, 감시 저장소), 이 기기의 푸시 구독·테스트 알림.
+- **알림**(`#/alerts`): 열린 알림과 지난 알림. 헤더 메뉴에 열린 알림 수.
 - **원격 실행**(`#/exec`): 대상 머신 선택, 명령·제한 시간 입력 → 확인 단계(대상과 명령 원문)를 거쳐 실행. 저장된 명령(불러오기·저장·덮어쓰기·삭제), 실행 기록.
 - **실행 상세**(`#/exec/:id`): 머신별 출력 패널(stderr 구분, 상태·종료 코드·소요 시간), 실행 취소, 다시 실행(명령과 대상을 채운 확인 전 폼으로).
 
@@ -215,6 +236,14 @@ saved_commands(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, command TEXT N
 - 규칙: 머신 `unreachable` N분 이상, 디스크 사용률, brew/pacman 업데이트 대기 수, 추적 파일 변경, 특정 git 저장소의 커밋 안 한 변경.
 - **알림은 PWA Web Push**: 웹 앱에 manifest와 service worker를 두고, VAPID 키로 허브가 직접 푸시한다(`web-push`). iOS는 홈 화면에 추가한 PWA만 푸시를 받는다(iOS 16.4+). 허브는 Apple·Google 푸시 서버로 나가는 연결만 필요하다.
 - 같은 문제는 해결될 때까지 한 번만 알린다.
+
+구현:
+
+- 판정은 허브가 한다. 수집이 끝날 때마다 그 결과로 디스크·업데이트·저장소·연결 끊김을, 30초 tick마다 연결 끊김을 다시 본다. 연결 끊김은 마지막 실행이 실패이고 마지막 성공(없으면 등록 시각)에서 `unreachableMin`분이 지난 상태다. `notify_unreachable`이 꺼진 머신(잠자는 노트북)은 제외한다.
+- 상태형 규칙(연결 끊김·디스크·업데이트·저장소)은 조건이 처음 성립할 때 알림을 열고 한 번 푸시한다. 조건이 풀리면 푸시 없이 닫는다. 판정할 수 없는 규칙(수집 실패, 업데이트 수 미상)은 열린 알림을 그대로 둔다. 규칙을 끄거나 머신을 비활성화하면 열린 알림을 닫는다.
+- 추적 파일 변경은 사건형이다. 이전 inventory와 이번 inventory에 모두 있는 경로의 kind·해시·링크 대상이 바뀌면 바로 닫힌 알림으로 기록하고 푸시한다. 추적 경로 설정을 바꿔 새로 생긴 경로는 알리지 않는다.
+- 푸시는 `web-push`로 보낸다. VAPID subject는 `NEUL_VAPID_SUBJECT`, 없으면 `NEUL_ALLOWED_LOGINS`의 첫 이메일(`mailto:`). TTL 24시간, tag는 머신·규칙·대상이라 같은 문제의 알림은 기기에서 대체된다. 푸시 서비스가 404/410을 주면 구독을 지운다.
+- 해결된 알림은 최근 1,000건만 남긴다.
 
 ### P3 — 패키지·도구 desired state
 
