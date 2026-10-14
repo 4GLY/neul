@@ -2,7 +2,7 @@ import type { Platform, RunStatus, Transport } from "../shared/types.ts";
 import windowsScript from "./collect.ps1" with { type: "text" };
 import posixScript from "./collect.sh" with { type: "text" };
 
-const SSH_OPTIONS = [
+export const SSH_OPTIONS = [
 	"-T",
 	"-o",
 	"BatchMode=yes",

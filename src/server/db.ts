@@ -2,11 +2,18 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
+	ExecChunk,
+	ExecRunDetail,
+	ExecRunSummary,
+	ExecStatus,
+	ExecTarget,
+	ExecTargetDetail,
 	Facts,
 	Inventory,
 	Platform,
 	RunStatus,
 	RunSummary,
+	SavedCommand,
 	Settings,
 	Transport,
 } from "../shared/types.ts";
@@ -47,9 +54,39 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS exec_runs (
+  id INTEGER PRIMARY KEY,
+  command TEXT NOT NULL,
+  timeout_s INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS exec_targets (
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL REFERENCES exec_runs ON DELETE CASCADE,
+  machine_id INTEGER REFERENCES machines ON DELETE SET NULL,
+  machine_name TEXT NOT NULL,
+  platform TEXT NOT NULL CHECK (platform IN ('posix','windows')),
+  status TEXT NOT NULL CHECK (status IN ('running','ok','failed','unreachable','timeout','canceled','interrupted')),
+  exit_code INTEGER,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  output_json TEXT NOT NULL DEFAULT '[]',
+  truncated INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS exec_targets_run_id ON exec_targets (run_id, id);
+CREATE TABLE IF NOT EXISTS saved_commands (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE NOT NULL,
+  command TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 export const RUNS_KEPT_PER_MACHINE = 2000;
+export const EXEC_RUNS_KEPT = 500;
 
 export const DEFAULT_SETTINGS: Settings = {
 	trackedPaths: [
@@ -116,6 +153,81 @@ function toRunSummary(row: RunRow): RunSummary {
 		status: row.status,
 		error: row.error,
 		inventoryChanged: row.inventory_changed === 1,
+	};
+}
+
+interface ExecRunRow {
+	id: number;
+	command: string;
+	timeout_s: number;
+	created_at: string;
+	created_by: string;
+	finished_at: string | null;
+}
+
+interface ExecTargetRow {
+	run_id: number;
+	machine_id: number | null;
+	machine_name: string;
+	platform: Platform;
+	status: ExecStatus;
+	exit_code: number | null;
+	started_at: string;
+	finished_at: string | null;
+	truncated: number;
+	output_json?: string;
+}
+
+interface SavedCommandRow {
+	id: number;
+	name: string;
+	command: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface ExecTargetResult {
+	status: Exclude<ExecStatus, "running" | "interrupted">;
+	exitCode: number | null;
+	finishedAt: string;
+	output: ExecChunk[];
+	truncated: boolean;
+}
+
+const EXEC_TARGET_COLUMNS =
+	"run_id, machine_id, machine_name, platform, status, exit_code, started_at, finished_at, truncated";
+
+function toExecTarget(row: ExecTargetRow): ExecTarget {
+	return {
+		machineId: row.machine_id,
+		machineName: row.machine_name,
+		platform: row.platform,
+		status: row.status,
+		exitCode: row.exit_code,
+		startedAt: row.started_at,
+		finishedAt: row.finished_at,
+		truncated: row.truncated === 1,
+	};
+}
+
+function toExecRun(row: ExecRunRow) {
+	return {
+		id: row.id,
+		command: row.command,
+		timeoutS: row.timeout_s,
+		createdAt: row.created_at,
+		createdBy: row.created_by,
+		finishedAt: row.finished_at,
+	};
+}
+
+function toSavedCommand(row: SavedCommandRow): SavedCommand {
+	return {
+		id: row.id,
+		name: row.name,
+		command: row.command,
+		createdAt: row.created_at,
+		updatedAt: row.updated_at,
 	};
 }
 
@@ -325,5 +437,187 @@ export class Store {
 				JSON.stringify(settings.collectIntervalMin),
 			);
 		})();
+	}
+
+	/**
+	 * Start an exec run with every target `running`; keeps the newest EXEC_RUNS_KEPT runs.
+	 * `targetIds[i]` is the exec_targets row of `machines[i]`.
+	 */
+	createExecRun(run: {
+		command: string;
+		timeoutS: number;
+		createdBy: string;
+		createdAt: string;
+		machines: MachineRow[];
+	}): { run: ExecRunDetail; targetIds: number[] } {
+		return this.db.transaction(() => {
+			const row = this.db
+				.query<ExecRunRow, [string, number, string, string]>(
+					"INSERT INTO exec_runs (command, timeout_s, created_at, created_by) VALUES (?, ?, ?, ?) RETURNING *",
+				)
+				.get(run.command, run.timeoutS, run.createdAt, run.createdBy);
+			if (!row) throw new Error("exec run insert returned no row");
+			const insertTarget = this.db.query<
+				{ id: number },
+				[number, number, string, Platform, string]
+			>(
+				"INSERT INTO exec_targets (run_id, machine_id, machine_name, platform, status, started_at) VALUES (?, ?, ?, ?, 'running', ?) RETURNING id",
+			);
+			const targetIds = run.machines.map((m) => {
+				const target = insertTarget.get(
+					row.id,
+					m.id,
+					m.name,
+					m.platform,
+					run.createdAt,
+				);
+				if (!target) throw new Error("exec target insert returned no row");
+				return target.id;
+			});
+			this.db
+				.query(
+					"DELETE FROM exec_runs WHERE id NOT IN (SELECT id FROM exec_runs ORDER BY id DESC LIMIT ?)",
+				)
+				.run(EXEC_RUNS_KEPT);
+			const detail = this.getExecRun(row.id);
+			if (!detail) throw new Error("exec run vanished after insert");
+			return { run: detail, targetIds };
+		})();
+	}
+
+	/**
+	 * Record a finished target. Returns the run's finishedAt once no target is running,
+	 * otherwise null.
+	 */
+	finishExecTarget(
+		runId: number,
+		targetId: number,
+		result: ExecTargetResult,
+	): string | null {
+		return this.db.transaction(() => {
+			this.db
+				.query(
+					"UPDATE exec_targets SET status = ?, exit_code = ?, finished_at = ?, output_json = ?, truncated = ? WHERE id = ?",
+				)
+				.run(
+					result.status,
+					result.exitCode,
+					result.finishedAt,
+					JSON.stringify(result.output),
+					result.truncated ? 1 : 0,
+					targetId,
+				);
+			const running = this.db
+				.query<{ n: number }, [number]>(
+					"SELECT count(*) AS n FROM exec_targets WHERE run_id = ? AND status = 'running'",
+				)
+				.get(runId);
+			if (running?.n) return null;
+			this.db
+				.query("UPDATE exec_runs SET finished_at = ? WHERE id = ?")
+				.run(result.finishedAt, runId);
+			return result.finishedAt;
+		})();
+	}
+
+	/** Close runs left `running` by a previous hub process (design.md §8 P1). */
+	interruptExecRuns(at: string): number {
+		return this.db.transaction(() => {
+			const changes = this.db
+				.query(
+					"UPDATE exec_targets SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
+				)
+				.run(at).changes;
+			this.db
+				.query("UPDATE exec_runs SET finished_at = ? WHERE finished_at IS NULL")
+				.run(at);
+			return changes;
+		})();
+	}
+
+	getExecRun(id: number): ExecRunDetail | null {
+		const row = this.db
+			.query<ExecRunRow, [number]>("SELECT * FROM exec_runs WHERE id = ?")
+			.get(id);
+		if (!row) return null;
+		const targets = this.db
+			.query<Required<ExecTargetRow>, [number]>(
+				`SELECT ${EXEC_TARGET_COLUMNS}, output_json FROM exec_targets WHERE run_id = ? ORDER BY id`,
+			)
+			.all(id)
+			.map(
+				(t): ExecTargetDetail => ({
+					...toExecTarget(t),
+					output: JSON.parse(t.output_json),
+				}),
+			);
+		return { ...toExecRun(row), targets };
+	}
+
+	listExecRuns(limit: number): ExecRunSummary[] {
+		const rows = this.db
+			.query<ExecRunRow, [number]>(
+				"SELECT * FROM exec_runs ORDER BY id DESC LIMIT ?",
+			)
+			.all(limit);
+		if (rows.length === 0) return [];
+		const targets = new Map<number, ExecTarget[]>();
+		for (const t of this.db
+			.query<ExecTargetRow, [number]>(
+				`SELECT ${EXEC_TARGET_COLUMNS} FROM exec_targets WHERE run_id >= ? ORDER BY id`,
+			)
+			.all(rows[rows.length - 1]?.id ?? 0)) {
+			const list = targets.get(t.run_id) ?? [];
+			list.push(toExecTarget(t));
+			targets.set(t.run_id, list);
+		}
+		return rows.map((r) => ({
+			...toExecRun(r),
+			targets: targets.get(r.id) ?? [],
+		}));
+	}
+
+	listSavedCommands(): SavedCommand[] {
+		return this.db
+			.query<SavedCommandRow, []>("SELECT * FROM saved_commands ORDER BY name")
+			.all()
+			.map(toSavedCommand);
+	}
+
+	getSavedCommand(id: number): SavedCommand | null {
+		const row = this.db
+			.query<SavedCommandRow, [number]>(
+				"SELECT * FROM saved_commands WHERE id = ?",
+			)
+			.get(id);
+		return row ? toSavedCommand(row) : null;
+	}
+
+	addSavedCommand(name: string, command: string): SavedCommand {
+		const now = new Date().toISOString();
+		const row = this.db
+			.query<SavedCommandRow, [string, string, string, string]>(
+				"INSERT INTO saved_commands (name, command, created_at, updated_at) VALUES (?, ?, ?, ?) RETURNING *",
+			)
+			.get(name, command, now, now);
+		if (!row) throw new Error("saved command insert returned no row");
+		return toSavedCommand(row);
+	}
+
+	updateSavedCommand(
+		id: number,
+		name: string,
+		command: string,
+	): SavedCommand | null {
+		const row = this.db
+			.query<SavedCommandRow, [string, string, string, number]>(
+				"UPDATE saved_commands SET name = ?, command = ?, updated_at = ? WHERE id = ? RETURNING *",
+			)
+			.get(name, command, new Date().toISOString(), id);
+		return row ? toSavedCommand(row) : null;
+	}
+
+	deleteSavedCommand(id: number): void {
+		this.db.query("DELETE FROM saved_commands WHERE id = ?").run(id);
 	}
 }

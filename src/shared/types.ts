@@ -149,6 +149,79 @@ export interface UpdateMachineRequest {
 	platform?: Platform;
 }
 
+// P1 remote execution (design.md §5, §6).
+
+export type ExecStatus =
+	| "running"
+	| "ok" // exit 0
+	| "failed" // non-zero exit
+	| "unreachable" // ssh exit 255
+	| "timeout"
+	| "canceled"
+	| "interrupted"; // the hub stopped while the target was running
+
+export type ExecStream = "stdout" | "stderr";
+
+export interface ExecChunk {
+	stream: ExecStream;
+	data: string;
+}
+
+export interface ExecTarget {
+	machineId: number | null; // null once the machine is deleted
+	machineName: string; // name at the time of the run
+	platform: Platform;
+	status: ExecStatus;
+	exitCode: number | null;
+	startedAt: string;
+	finishedAt: string | null;
+	truncated: boolean; // output exceeded the per-target limit and the rest was dropped
+}
+
+export interface ExecTargetDetail extends ExecTarget {
+	output: ExecChunk[]; // in arrival order; consecutive chunks of one stream are merged
+}
+
+export interface ExecRunSummary {
+	id: number;
+	command: string;
+	timeoutS: number;
+	createdAt: string;
+	createdBy: string;
+	finishedAt: string | null; // null while any target is running
+	targets: ExecTarget[];
+}
+
+export interface ExecRunDetail extends Omit<ExecRunSummary, "targets"> {
+	targets: ExecTargetDetail[];
+}
+
+export interface ExecRequest {
+	command: string;
+	machineIds: number[];
+	timeoutS?: number; // per target, default 300
+}
+
+/** Server-sent events on GET /api/exec/:id/events; the SSE event name is `type`. */
+export type ExecEvent =
+	| { type: "snapshot"; run: ExecRunDetail } // first event of every connection
+	| { type: "chunk"; machineId: number; stream: ExecStream; data: string }
+	| { type: "exit"; machineId: number; target: ExecTarget }
+	| { type: "done"; finishedAt: string };
+
+export interface SavedCommand {
+	id: number;
+	name: string;
+	command: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface SavedCommandInput {
+	name: string;
+	command: string;
+}
+
 export interface ApiError {
 	error: string;
 }

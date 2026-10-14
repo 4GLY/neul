@@ -2,10 +2,21 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Compare } from "./compare";
 import { Detail } from "./detail";
+import { ExecPage, ExecRunView } from "./exec";
 import { Machines } from "./machines";
 import { Settings } from "./settings";
 import { Empty, useResource } from "./ui";
 import "./styles.css";
+
+const PAGE_TITLES: Record<
+	"machines" | "compare" | "exec" | "settings",
+	string
+> = {
+	machines: "내 머신",
+	compare: "머신 비교",
+	exec: "원격 실행",
+	settings: "허브 설정",
+};
 
 function App() {
 	const [route, setRoute] = useState(window.location.hash.slice(1) || "/");
@@ -19,14 +30,17 @@ function App() {
 		return () => window.removeEventListener("hashchange", change);
 	}, []);
 	const detailMatch = /^\/machines\/(\d+)$/.exec(route);
+	const execMatch = /^\/exec\/(\d+)$/.exec(route);
 	const page =
 		route === "/compare"
 			? "compare"
 			: route === "/settings"
 				? "settings"
-				: "machines";
+				: route === "/exec" || execMatch
+					? "exec"
+					: "machines";
 	useEffect(() => {
-		document.title = `${page === "compare" ? "머신 비교" : page === "settings" ? "허브 설정" : "내 머신"} · 늘`;
+		document.title = `${PAGE_TITLES[page]} · 늘`;
 	}, [page]);
 	return (
 		<>
@@ -59,6 +73,13 @@ function App() {
 							비교
 						</a>
 						<a
+							href="#/exec"
+							className={page === "exec" ? "active" : ""}
+							aria-current={page === "exec" ? "page" : undefined}
+						>
+							실행
+						</a>
+						<a
 							href="#/settings"
 							className={page === "settings" ? "active" : ""}
 							aria-current={page === "settings" ? "page" : undefined}
@@ -81,6 +102,10 @@ function App() {
 					<Machines />
 				) : route === "/compare" ? (
 					<Compare />
+				) : route === "/exec" ? (
+					<ExecPage />
+				) : execMatch ? (
+					<ExecRunView key={execMatch[1]} id={Number(execMatch[1])} />
 				) : route === "/settings" ? (
 					<Settings />
 				) : (
@@ -93,7 +118,7 @@ function App() {
 				<span>
 					늘 <span className="separator">/</span> 개인 개발 환경 관측소
 				</span>
-				<span className="mono">READ-ONLY INVENTORY</span>
+				<span className="mono">INVENTORY · REMOTE EXEC</span>
 			</footer>
 		</>
 	);

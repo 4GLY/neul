@@ -3,7 +3,7 @@
 > **늘**: 내 개발 머신들을 한 곳에서 보고, 맞추고, 실행하고, 지켜본다.
 
 - 작성: 2026-10-14
-- 상태: P0 구현 중
+- 상태: P0 배포, P1 구현
 - 이전 버전: `archive/v1` 태그 (Go server/agent + React, 2026-05~07)
 
 ## 1. v1에서 배운 것
@@ -111,7 +111,7 @@ flowchart LR
 - **inventory**(패키지·mise·파일 해시)는 내용 해시가 같으면 새로 저장하지 않는다. `(machine_id, hash)`가 같으면 `last_seen_at`만 갱신한다.
 - `runs`는 머신당 최근 2,000건만 남긴다. inventory는 지우지 않는다(변경 이력).
 
-## 5. 데이터 모델 (P0)
+## 5. 데이터 모델
 
 ```sql
 machines(
@@ -132,11 +132,28 @@ runs(
   error TEXT, facts_json TEXT, inventory_id INTEGER REFERENCES inventories)
 
 settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)
+
+-- P1 원격 실행
+exec_runs(
+  id INTEGER PRIMARY KEY, command TEXT NOT NULL, timeout_s INTEGER NOT NULL,
+  created_at TEXT NOT NULL, created_by TEXT NOT NULL, finished_at TEXT)  -- 모든 대상이 끝나면 채움
+
+exec_targets(
+  id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES exec_runs ON DELETE CASCADE,
+  machine_id INTEGER REFERENCES machines ON DELETE SET NULL, machine_name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running','ok','failed','unreachable','timeout','canceled','interrupted')),
+  exit_code INTEGER, started_at TEXT NOT NULL, finished_at TEXT,
+  output_json TEXT NOT NULL DEFAULT '[]',  -- [{stream, data}] 도착 순서
+  truncated INTEGER NOT NULL DEFAULT 0)
+
+saved_commands(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, command TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
 ```
 
 설정 키: `trackedPaths`(string[]), `collectIntervalMin`(number, 기본 10).
 
-## 6. API (P0)
+## 6. API
 
 공유 타입은 `src/shared/types.ts`. 모든 응답은 JSON, 실패는 `{ "error": string }`과 4xx/5xx.
 
@@ -152,13 +169,21 @@ settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)
 | `POST /api/collect` | 활성 머신 전체 즉시 수집, `RunSummary[]` |
 | `GET /api/compare` | `CompareView` |
 | `GET /api/settings`, `PUT /api/settings` | `Settings` |
+| `POST /api/exec` | `{ command, machineIds, timeoutS? }` → `{ id }`. 바로 실행을 시작한다. 이미 실행 중인 머신이 있으면 409 |
+| `GET /api/exec` | 최근 100건 `ExecRunSummary[]` (출력 제외) |
+| `GET /api/exec/:id` | `ExecRunDetail`. 실행 중이면 지금까지의 출력 포함 |
+| `GET /api/exec/:id/events` | SSE. 연결마다 `snapshot`(전체 상태)으로 시작하고 `chunk`·`exit`·`done`을 보낸다. 끝난 실행은 `snapshot` 뒤 바로 `done`. 15초마다 keepalive 주석 |
+| `POST /api/exec/:id/cancel` | 실행 중인 대상 모두 취소. 이미 끝났으면 409 |
+| `GET /api/commands`, `POST /api/commands`, `PATCH /api/commands/:id`, `DELETE /api/commands/:id` | 저장된 명령 `{ name, command }`. 이름은 고유 |
 
-## 7. 화면 (P0)
+## 7. 화면
 
 - **머신 목록**: 상태, OS, uptime, 부하, 메모리·디스크 사용률, 배터리, 패키지 수, 마지막 수집 시각. "전체 수집", "머신 추가".
 - **머신 상세**: facts, 최근 실행 기록(오류 메시지 포함), brew formula/cask(직접 설치 여부 표시), pacman, mise 도구(활성 버전), 추적 파일 해시. 검색 필터.
 - **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본.
 - **설정**: 추적 경로 패턴, 수집 주기.
+- **원격 실행**(`#/exec`): 대상 머신 선택, 명령·제한 시간 입력 → 확인 단계(대상과 명령 원문)를 거쳐 실행. 저장된 명령(불러오기·저장·덮어쓰기·삭제), 실행 기록.
+- **실행 상세**(`#/exec/:id`): 머신별 출력 패널(stderr 구분, 상태·종료 코드·소요 시간), 실행 취소, 다시 실행(명령과 대상을 채운 확인 전 폼으로).
 
 ## 8. 단계와 완료 기준
 
@@ -176,6 +201,14 @@ settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)
 - 머신 여러 대를 골라 셸 명령을 실행하고, 머신별 stdout/stderr를 SSE로 실시간 본다.
 - 실행 기록(명령, 대상, 종료 코드, 출력)이 남는다. 자주 쓰는 명령을 저장해 다시 실행한다.
 - 실행은 항상 사용자 확인 후. 허브가 스스로 명령을 실행하지 않는다.
+
+구현:
+
+- 명령은 stdin으로 보낸다. posix는 `ssh <alias> sh -s`(local은 `sh -s`)에 래퍼 스크립트를 보낸다. 래퍼는 수집 스크립트와 같은 PATH 보강을 하고, 명령을 별도 프로세스 그룹에서 `sh -c`로 실행한다(명령의 stdin은 `/dev/null`). 허브는 stdin을 열어 두고, 래퍼의 감시 프로세스는 stdin EOF를 받으면 그 프로세스 그룹을 kill한다. 취소·시간 초과·허브 종료 때 stdin이 닫히면 원격 프로세스도 함께 끝난다. 5초 안에 끝나지 않으면 로컬 `ssh`를 SIGKILL한다.
+- windows는 `powershell -NoProfile -NonInteractive -Command -`에 `[Console]::OutputEncoding`을 UTF-8로 맞춘 뒤 명령을 보내고 stdin을 닫는다. 취소하면 로컬 `ssh`를 SIGKILL한다(원격 정리 미검증).
+- 결과: 종료 코드 0 → `ok`, ssh 255 → `unreachable`, 그 밖 → `failed`. 제한 시간(기본 300초, 최대 3600초) 초과 → `timeout`, 사용자 취소 → `canceled`. 같은 머신에서는 한 번에 하나만 실행한다.
+- 출력은 대상별로 stdout·stderr 합쳐 1 MiB까지만 남기고 넘으면 `truncated`. 실행 중 출력은 메모리에 두고 대상이 끝날 때 저장한다. 허브가 시작할 때 `running`으로 남은 대상은 `interrupted`로 마감한다(그 출력은 남지 않는다).
+- 실행 기록은 최근 500건만 남긴다. 머신을 지워도 기록은 `machine_name`으로 남는다.
 
 ### P2 — 모니터링·알림
 
