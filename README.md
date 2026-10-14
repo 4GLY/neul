@@ -19,10 +19,12 @@ bun test
 bun run typecheck && bun run lint
 ```
 
-## 허브에 설치
+## 허브에 배포
+
+허브 Mac의 개발 저장소에서 실행한다. `origin/main`을 별도 worktree(`~/.local/share/neul/hub`)에 받아 LaunchAgent로 띄우므로, 개발 중인 체크아웃은 돌고 있는 허브에 영향을 주지 않는다.
 
 ```sh
-deploy/install-launchagent.sh <tailscale-login>
+deploy/update-hub.sh <tailscale-login>
 ```
 
 `~/.ssh/config`의 별칭으로 머신을 추가한다. 허브에서 `ssh -o BatchMode=yes <별칭> true`가 성공해야 한다.
