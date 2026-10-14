@@ -91,6 +91,9 @@ if have pacman; then
   pacman -Qe 2>/dev/null
   echo "@@ pacman_count"
   pacman -Q 2>/dev/null | wc -l | tr -d ' '
+  # Whether the hub can apply pacman changes non-interactively (sudoers NOPASSWD for pacman).
+  echo "@@ pacman_sudo"
+  if sudo -n /usr/bin/pacman -V >/dev/null 2>&1; then echo yes; else echo no; fi
   # checkupdates syncs into a temporary database, never the system one. Exit 2 = no updates;
   # any other failure (e.g. offline) omits the section so the count stays unknown.
   if have checkupdates; then

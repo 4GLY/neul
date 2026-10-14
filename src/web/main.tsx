@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Alert } from "../shared/types";
 import { Alerts } from "./alerts";
 import { Compare } from "./compare";
+import { DesiredPage } from "./desired";
 import { Detail } from "./detail";
 import { ExecPage, ExecRunView } from "./exec";
 import { Machines } from "./machines";
@@ -11,12 +12,13 @@ import { Empty, useResource } from "./ui";
 import "./styles.css";
 
 const PAGE_TITLES: Record<
-	"machines" | "compare" | "exec" | "alerts" | "settings",
+	"machines" | "compare" | "exec" | "desired" | "alerts" | "settings",
 	string
 > = {
 	machines: "내 머신",
 	compare: "머신 비교",
 	exec: "원격 실행",
+	desired: "맞추기",
 	alerts: "알림",
 	settings: "허브 설정",
 };
@@ -45,9 +47,11 @@ function App() {
 				? "settings"
 				: route === "/alerts"
 					? "alerts"
-					: route === "/exec" || execMatch
-						? "exec"
-						: "machines";
+					: route === "/desired"
+						? "desired"
+						: route === "/exec" || execMatch
+							? "exec"
+							: "machines";
 	useEffect(() => {
 		document.title = `${PAGE_TITLES[page]} · 늘`;
 	}, [page]);
@@ -89,6 +93,13 @@ function App() {
 							실행
 						</a>
 						<a
+							href="#/desired"
+							className={page === "desired" ? "active" : ""}
+							aria-current={page === "desired" ? "page" : undefined}
+						>
+							맞추기
+						</a>
+						<a
 							href="#/alerts"
 							className={page === "alerts" ? "active" : ""}
 							aria-current={page === "alerts" ? "page" : undefined}
@@ -128,6 +139,8 @@ function App() {
 					<ExecPage />
 				) : execMatch ? (
 					<ExecRunView key={execMatch[1]} id={Number(execMatch[1])} />
+				) : route === "/desired" ? (
+					<DesiredPage />
 				) : route === "/alerts" ? (
 					<Alerts />
 				) : route === "/settings" ? (

@@ -29,6 +29,8 @@
 	--track: #e7ebe5;
 	--focus: #238369;
 	--white: #ffffff;
+	--backdrop: rgb(32 41 37 / 0.45);
+	--dialog-width: 560px;
 	--space-1: 4px;
 	--space-2: 8px;
 	--space-3: 12px;
@@ -77,6 +79,7 @@
 		--track: #354139;
 		--focus: #87c5a7;
 		--white: #17221b;
+		--backdrop: rgb(0 0 0 / 0.6);
 	}
 }
 * {
@@ -1071,6 +1074,150 @@ th {
 	min-width: 240px;
 	overflow-wrap: anywhere;
 }
+.row-key-cell {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-2);
+}
+.adopt-button {
+	min-height: var(--space-6);
+	padding: 0 var(--space-2);
+	font-size: var(--text-xs);
+	color: var(--accent);
+}
+.managed-link {
+	white-space: nowrap;
+	font-family: var(--font-sans);
+}
+.desired-dialog {
+	width: min(var(--dialog-width), calc(100vw - var(--space-8)));
+	max-height: calc(100vh - var(--space-16));
+	padding: 0;
+	border: var(--border) solid var(--line);
+	border-radius: var(--radius);
+	background: var(--surface);
+	color: var(--text);
+}
+.desired-dialog::backdrop {
+	background: var(--backdrop);
+}
+.desired-dialog h2 {
+	overflow-wrap: anywhere;
+}
+.desired-dialog form .notice {
+	margin: 0 var(--space-6) var(--space-4);
+}
+.dialog-body {
+	display: grid;
+	gap: var(--space-5);
+	padding: var(--space-6);
+}
+.dialog-targets {
+	display: grid;
+	gap: var(--space-2);
+}
+.exec-target.blocked {
+	cursor: not-allowed;
+	color: var(--muted);
+	background: var(--surface-soft);
+}
+.segmented {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	border: var(--border) solid var(--line);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+}
+.segment {
+	flex-direction: row;
+	align-items: center;
+	justify-content: center;
+	min-height: var(--control);
+	cursor: pointer;
+	transition: background var(--duration);
+}
+.segment + .segment {
+	border-left: var(--border) solid var(--line);
+}
+/* Visually hidden but focusable; the generic input rule would make it full width. */
+.segment input {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	min-height: 0;
+	padding: 0;
+	opacity: 0;
+	pointer-events: none;
+}
+.segment.selected {
+	background: var(--accent-soft);
+	color: var(--accent);
+}
+.segment:has(input:focus-visible) {
+	outline: 2px solid var(--focus);
+	outline-offset: -2px;
+}
+.plan-list {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.plan-machine {
+	display: grid;
+	gap: var(--space-2);
+	padding: var(--space-4) var(--space-6);
+	border-bottom: var(--border) solid var(--line);
+}
+.plan-steps {
+	margin: 0;
+	padding-left: var(--space-8);
+	display: grid;
+	gap: var(--space-1);
+	font: var(--text-sm) / 1.6 var(--font-mono);
+}
+.plan-step.install::marker {
+	color: var(--success);
+}
+.plan-step.remove {
+	color: var(--danger);
+}
+.plan-machine summary,
+.target-command summary {
+	cursor: pointer;
+	color: var(--muted);
+}
+.plan-machine .exec-command,
+.target-command .exec-command {
+	margin-top: var(--space-2);
+}
+.target-command {
+	padding: var(--space-3) var(--space-6);
+	border-bottom: var(--border) solid var(--line);
+}
+.add-item {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+}
+.add-item label {
+	font-weight: 400;
+}
+.add-item select {
+	width: auto;
+}
+.matrix.desired-matrix thead th:first-child {
+	width: auto;
+}
+.item-manager {
+	display: block;
+	font-weight: 400;
+}
+.cell-detail {
+	display: block;
+	margin-top: var(--space-1);
+}
 @media (max-width: 1200px) {
 	.machine-row {
 		grid-template-columns: 1.2fr 1.3fr 1fr;
@@ -1159,7 +1306,7 @@ th {
 		min-height: var(--space-16);
 	}
 	nav {
-		gap: var(--space-4);
+		gap: var(--space-3);
 	}
 	nav a {
 		white-space: nowrap;

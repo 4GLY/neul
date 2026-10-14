@@ -4,6 +4,9 @@ import { dirname } from "node:path";
 import type {
 	Alert,
 	AlertRule,
+	DesiredEnsure,
+	DesiredItem,
+	DesiredManager,
 	ExecChunk,
 	ExecRunDetail,
 	ExecRunSummary,
@@ -97,6 +100,20 @@ CREATE TABLE IF NOT EXISTS alerts (
   notified_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_open ON alerts (machine_id, rule, subject) WHERE resolved_at IS NULL;
+CREATE TABLE IF NOT EXISTS desired_items (
+  id INTEGER PRIMARY KEY,
+  manager TEXT NOT NULL CHECK (manager IN ('brew_formula','brew_cask','pacman','mise')),
+  name TEXT NOT NULL,
+  version TEXT,
+  ensure TEXT NOT NULL CHECK (ensure IN ('present','absent')),
+  created_at TEXT NOT NULL,
+  UNIQUE (manager, name)
+);
+CREATE TABLE IF NOT EXISTS desired_targets (
+  item_id INTEGER NOT NULL REFERENCES desired_items ON DELETE CASCADE,
+  machine_id INTEGER NOT NULL REFERENCES machines ON DELETE CASCADE,
+  PRIMARY KEY (item_id, machine_id)
+);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INTEGER PRIMARY KEY,
   endpoint TEXT UNIQUE NOT NULL,
@@ -110,6 +127,8 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 /** Columns added after a table first shipped: [table, column, definition]. */
 const ADDED_COLUMNS: [string, string, string][] = [
 	["machines", "notify_unreachable", "INTEGER NOT NULL DEFAULT 1"],
+	["exec_runs", "kind", "TEXT NOT NULL DEFAULT 'command'"],
+	["exec_targets", "command", "TEXT"],
 ];
 
 export const RUNS_KEPT_PER_MACHINE = 2000;
@@ -194,6 +213,7 @@ function toRunSummary(row: RunRow): RunSummary {
 
 interface ExecRunRow {
 	id: number;
+	kind: "command" | "apply";
 	command: string;
 	timeout_s: number;
 	created_at: string;
@@ -211,6 +231,7 @@ interface ExecTargetRow {
 	started_at: string;
 	finished_at: string | null;
 	truncated: number;
+	command: string | null;
 	output_json?: string;
 }
 
@@ -231,7 +252,7 @@ export interface ExecTargetResult {
 }
 
 const EXEC_TARGET_COLUMNS =
-	"run_id, machine_id, machine_name, platform, status, exit_code, started_at, finished_at, truncated";
+	"run_id, machine_id, machine_name, platform, status, exit_code, started_at, finished_at, truncated, command";
 
 function toExecTarget(row: ExecTargetRow): ExecTarget {
 	return {
@@ -243,12 +264,14 @@ function toExecTarget(row: ExecTargetRow): ExecTarget {
 		startedAt: row.started_at,
 		finishedAt: row.finished_at,
 		truncated: row.truncated === 1,
+		command: row.command,
 	};
 }
 
 function toExecRun(row: ExecRunRow) {
 	return {
 		id: row.id,
+		kind: row.kind,
 		command: row.command,
 		timeoutS: row.timeout_s,
 		createdAt: row.created_at,
@@ -311,6 +334,27 @@ function toAlert(row: AlertRow): Alert {
 		message: row.message,
 		openedAt: row.opened_at,
 		resolvedAt: row.resolved_at,
+	};
+}
+
+interface DesiredItemRow {
+	id: number;
+	manager: DesiredManager;
+	name: string;
+	version: string | null;
+	ensure: DesiredEnsure;
+	created_at: string;
+}
+
+function toDesiredItem(row: DesiredItemRow, machineIds: number[]): DesiredItem {
+	return {
+		id: row.id,
+		manager: row.manager,
+		name: row.name,
+		version: row.version,
+		ensure: row.ensure,
+		machineIds,
+		createdAt: row.created_at,
 	};
 }
 
@@ -700,35 +744,38 @@ export class Store {
 
 	/**
 	 * Start an exec run with every target `running`; keeps the newest EXEC_RUNS_KEPT runs.
-	 * `targetIds[i]` is the exec_targets row of `machines[i]`.
+	 * `targetIds[i]` is the exec_targets row of `targets[i]`; a target command of null runs
+	 * the run's command.
 	 */
 	createExecRun(run: {
+		kind: "command" | "apply";
 		command: string;
 		timeoutS: number;
 		createdBy: string;
 		createdAt: string;
-		machines: MachineRow[];
+		targets: { machine: MachineRow; command: string | null }[];
 	}): { run: ExecRunDetail; targetIds: number[] } {
 		return this.db.transaction(() => {
 			const row = this.db
-				.query<ExecRunRow, [string, number, string, string]>(
-					"INSERT INTO exec_runs (command, timeout_s, created_at, created_by) VALUES (?, ?, ?, ?) RETURNING *",
+				.query<ExecRunRow, [string, string, number, string, string]>(
+					"INSERT INTO exec_runs (kind, command, timeout_s, created_at, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
 				)
-				.get(run.command, run.timeoutS, run.createdAt, run.createdBy);
+				.get(run.kind, run.command, run.timeoutS, run.createdAt, run.createdBy);
 			if (!row) throw new Error("exec run insert returned no row");
 			const insertTarget = this.db.query<
 				{ id: number },
-				[number, number, string, Platform, string]
+				[number, number, string, Platform, string, string | null]
 			>(
-				"INSERT INTO exec_targets (run_id, machine_id, machine_name, platform, status, started_at) VALUES (?, ?, ?, ?, 'running', ?) RETURNING id",
+				"INSERT INTO exec_targets (run_id, machine_id, machine_name, platform, status, started_at, command) VALUES (?, ?, ?, ?, 'running', ?, ?) RETURNING id",
 			);
-			const targetIds = run.machines.map((m) => {
+			const targetIds = run.targets.map(({ machine: m, command }) => {
 				const target = insertTarget.get(
 					row.id,
 					m.id,
 					m.name,
 					m.platform,
 					run.createdAt,
+					command,
 				);
 				if (!target) throw new Error("exec target insert returned no row");
 				return target.id;
@@ -878,5 +925,87 @@ export class Store {
 
 	deleteSavedCommand(id: number): void {
 		this.db.query("DELETE FROM saved_commands WHERE id = ?").run(id);
+	}
+
+	listDesired(): DesiredItem[] {
+		const targets = new Map<number, number[]>();
+		for (const t of this.db
+			.query<{ item_id: number; machine_id: number }, []>(
+				"SELECT item_id, machine_id FROM desired_targets ORDER BY machine_id",
+			)
+			.all()) {
+			const list = targets.get(t.item_id) ?? [];
+			list.push(t.machine_id);
+			targets.set(t.item_id, list);
+		}
+		return this.db
+			.query<DesiredItemRow, []>(
+				"SELECT * FROM desired_items ORDER BY manager, name",
+			)
+			.all()
+			.map((row) => toDesiredItem(row, targets.get(row.id) ?? []));
+	}
+
+	getDesired(id: number): DesiredItem | null {
+		return this.listDesired().find((item) => item.id === id) ?? null;
+	}
+
+	addDesired(item: {
+		manager: DesiredManager;
+		name: string;
+		version: string | null;
+		ensure: DesiredEnsure;
+		machineIds: number[];
+	}): DesiredItem {
+		const id = this.db.transaction(() => {
+			const row = this.db
+				.query<
+					{ id: number },
+					[DesiredManager, string, string | null, DesiredEnsure, string]
+				>(
+					"INSERT INTO desired_items (manager, name, version, ensure, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+				)
+				.get(
+					item.manager,
+					item.name,
+					item.version,
+					item.ensure,
+					new Date().toISOString(),
+				);
+			if (!row) throw new Error("desired item insert returned no row");
+			this.setDesiredTargets(row.id, item.machineIds);
+			return row.id;
+		})();
+		const created = this.getDesired(id);
+		if (!created) throw new Error("desired item vanished after insert");
+		return created;
+	}
+
+	updateDesired(
+		id: number,
+		patch: {
+			version: string | null;
+			ensure: DesiredEnsure;
+			machineIds: number[];
+		},
+	): void {
+		this.db.transaction(() => {
+			this.db
+				.query("UPDATE desired_items SET version = ?, ensure = ? WHERE id = ?")
+				.run(patch.version, patch.ensure, id);
+			this.setDesiredTargets(id, patch.machineIds);
+		})();
+	}
+
+	private setDesiredTargets(itemId: number, machineIds: number[]): void {
+		this.db.query("DELETE FROM desired_targets WHERE item_id = ?").run(itemId);
+		const insert = this.db.query(
+			"INSERT INTO desired_targets (item_id, machine_id) VALUES (?, ?)",
+		);
+		for (const machineId of machineIds) insert.run(itemId, machineId);
+	}
+
+	deleteDesired(id: number): void {
+		this.db.query("DELETE FROM desired_items WHERE id = ?").run(id);
 	}
 }

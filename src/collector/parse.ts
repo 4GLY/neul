@@ -209,6 +209,10 @@ export function toInventory(sections: Map<string, string[]>): Inventory {
 		brewCasks: brewList(sections.get("brew_casks"), () => true),
 		pacmanExplicit: pacmanList(sections.get("pacman_explicit")),
 		pacmanTotal: pacmanTotal === undefined ? null : num(pacmanTotal),
+		pacmanSudo:
+			sections.get("pacman_sudo") === undefined
+				? null
+				: sections.get("pacman_sudo")?.[0] === "yes",
 		mise: miseTools(sections.get("mise_json")),
 		files: trackedFiles(sections.get("files")),
 	};

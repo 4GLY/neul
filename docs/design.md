@@ -3,7 +3,7 @@
 > **늘**: 내 개발 머신들을 한 곳에서 보고, 맞추고, 실행하고, 지켜본다.
 
 - 작성: 2026-10-14
-- 상태: P0–P2 배포 (P2 iPhone PWA 푸시 확인)
+- 상태: P0–P2 배포, P3 구현
 - 이전 버전: `archive/v1` 태그 (Go server/agent + React, 2026-05~07)
 
 ## 1. v1에서 배운 것
@@ -90,6 +90,7 @@ flowchart LR
 | `brew_leaves` | 직접 설치한 formula 이름 한 줄씩 | brew 있을 때 |
 | `pacman_explicit` | `pacman -Qe` 줄: `name ver` | pacman 있을 때 |
 | `pacman_count` | 전체 패키지 수 | pacman 있을 때 |
+| `pacman_sudo` | `yes`·`no`. `sudo -n /usr/bin/pacman -V`가 되는지(허브가 pacman 변경을 적용할 수 있는지) | pacman 있을 때 |
 | `mise_json` | `mise ls --json` 원문 | mise 있을 때 |
 | `files` | 탭 구분 `kind sha256 size link_target path`. kind는 `file`·`symlink`·`dir`·`broken`·`missing` | posix |
 | `brew_outdated` | `brew outdated --quiet` 이름 한 줄씩. 마지막 `brew update` 시점의 메타데이터 기준(`HOMEBREW_NO_AUTO_UPDATE`) | brew 있을 때 |
@@ -140,7 +141,8 @@ settings(key TEXT PRIMARY KEY, value_json TEXT NOT NULL)
 -- P1 원격 실행
 exec_runs(
   id INTEGER PRIMARY KEY, command TEXT NOT NULL, timeout_s INTEGER NOT NULL,
-  created_at TEXT NOT NULL, created_by TEXT NOT NULL, finished_at TEXT)  -- 모든 대상이 끝나면 채움
+  created_at TEXT NOT NULL, created_by TEXT NOT NULL, finished_at TEXT,  -- 모든 대상이 끝나면 채움
+  kind TEXT NOT NULL DEFAULT 'command')  -- P3: 'apply'는 맞추기 적용. command는 요약
 
 exec_targets(
   id INTEGER PRIMARY KEY, run_id INTEGER NOT NULL REFERENCES exec_runs ON DELETE CASCADE,
@@ -149,7 +151,8 @@ exec_targets(
   status TEXT NOT NULL CHECK (status IN ('running','ok','failed','unreachable','timeout','canceled','interrupted')),
   exit_code INTEGER, started_at TEXT NOT NULL, finished_at TEXT,
   output_json TEXT NOT NULL DEFAULT '[]',  -- [{stream, data}] 도착 순서
-  truncated INTEGER NOT NULL DEFAULT 0)
+  truncated INTEGER NOT NULL DEFAULT 0,
+  command TEXT)  -- P3: 이 대상만의 스크립트(apply). NULL이면 run의 command
 
 saved_commands(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, command TEXT NOT NULL,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL)
@@ -164,6 +167,17 @@ alerts(
 
 push_subscriptions(id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL,
   p256dh TEXT NOT NULL, auth TEXT NOT NULL, user_agent TEXT, created_at TEXT NOT NULL)
+
+-- P3 패키지·도구 desired state
+desired_items(
+  id INTEGER PRIMARY KEY,
+  manager TEXT NOT NULL CHECK (manager IN ('brew_formula','brew_cask','pacman','mise')),
+  name TEXT NOT NULL, version TEXT,  -- version은 mise만(전역 요청 버전)
+  ensure TEXT NOT NULL CHECK (ensure IN ('present','absent')),
+  created_at TEXT NOT NULL, UNIQUE (manager, name))
+
+desired_targets(item_id → desired_items CASCADE, machine_id → machines CASCADE,
+  PRIMARY KEY (item_id, machine_id))
 ```
 
 설정 키: `trackedPaths`(string[]), `collectIntervalMin`(number, 기본 10), `alertRules`(`{ unreachableMin, diskPercent, updatesCount }`는 숫자 또는 null=끔, 기본 30·90·20, `trackedFiles`(기본 true), `repos`(string[])). `vapidKeys`도 settings 테이블에 있지만 `GET /api/settings`로는 나가지 않는다.
@@ -195,16 +209,23 @@ push_subscriptions(id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL,
 | `POST /api/push/subscriptions`, `DELETE /api/push/subscriptions` | 이 기기의 `PushSubscription.toJSON()` 등록, `{ endpoint }`로 해제 |
 | `POST /api/push/test` | 구독한 모든 기기로 테스트 알림, `{ sent, failed }` |
 | `GET /sw.js`, `/icon-192.png`, `/icon-512.png` | PWA 파일(인증 없음). manifest와 apple-touch-icon은 `index.html` 번들 자산 |
+| `GET /api/desired` | `DesiredView`: 관리 항목 × 대상 머신 상태 |
+| `POST /api/desired` | `DesiredInput`. 대상은 수집된 적 있고 그 관리자를 적용할 수 있는 머신만(아니면 400). 같은 (manager, name)은 하나 |
+| `PATCH /api/desired/:id`, `DELETE /api/desired/:id` | 버전·ensure·대상 변경, 관리 해제(머신의 패키지는 그대로) |
+| `GET /api/desired/candidates?manager=&name=` | 채택 전 머신별 적용 가능 여부·현재 상태 |
+| `GET /api/desired/plan` | `MachinePlan[]`: drift가 있는 머신마다 단계와 실행할 스크립트 원문 |
+| `POST /api/desired/apply` | `{ plans: [{ machineId, command }] }`. 지금 계획과 스크립트가 다르면 409. apply 실행 run을 시작해 `{ id }` |
 
 ## 7. 화면
 
 - **머신 목록**: 상태, OS, uptime, 부하, 메모리·디스크 사용률, 배터리, 패키지 수, 마지막 수집 시각. "전체 수집", "머신 추가".
 - **머신 상세**: facts(업데이트 대기 수, 감시 저장소 상태 포함), 최근 실행 기록(오류 메시지 포함), brew formula/cask(직접 설치 여부 표시), pacman, mise 도구(활성 버전), 추적 파일 해시. 검색 필터. 편집에서 "연결 끊김 알림" 토글.
-- **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본.
+- **비교**: 머신을 열로 한 행렬. brew formula·cask, mise 활성 버전, 추적 파일 해시. "다른 것만 보기"가 기본. 패키지 행마다 "채택"(의존성으로만 설치된 formula 제외) 또는 "관리 중".
+- **맞추기**(`#/desired`): 계획(머신별 설치·제거 목록, 스크립트 원문, 적용할 머신 선택 → 확인 → 적용), 관리 항목 × 머신 상태 행렬, 편집·해제, 이름으로 직접 추가. 채택·편집 대화상자는 적용할 수 없는 머신을 고를 수 없게 보여 준다. 머신 상세 인벤토리에도 "채택".
 - **설정**: 추적 경로 패턴, 수집 주기, 알림 규칙(임계값·끄기, 감시 저장소), 이 기기의 푸시 구독·테스트 알림.
 - **알림**(`#/alerts`): 열린 알림과 지난 알림. 헤더 메뉴에 열린 알림 수.
 - **원격 실행**(`#/exec`): 대상 머신 선택, 명령·제한 시간 입력 → 확인 단계(대상과 명령 원문)를 거쳐 실행. 저장된 명령(불러오기·저장·덮어쓰기·삭제), 실행 기록.
-- **실행 상세**(`#/exec/:id`): 머신별 출력 패널(stderr 구분, 상태·종료 코드·소요 시간), 실행 취소, 다시 실행(명령과 대상을 채운 확인 전 폼으로).
+- **실행 상세**(`#/exec/:id`): 머신별 출력 패널(stderr 구분, 상태·종료 코드·소요 시간, ANSI 색 제거), 실행 취소, 다시 실행(명령과 대상을 채운 확인 전 폼으로). 맞추기 적용 run은 머신별 스크립트를 펼쳐 보고 "맞추기로" 돌아간다.
 
 ## 8. 단계와 완료 기준
 
@@ -250,6 +271,14 @@ push_subscriptions(id INTEGER PRIMARY KEY, endpoint TEXT UNIQUE NOT NULL,
 - 대상: brew formula/cask(macOS), pacman(Arch), mise 전역 도구.
 - 흐름: 수집된 현재 상태에서 항목을 "채택" → desired 항목이 되고 적용 대상 머신을 고른다 → 허브가 차이를 계산(`in_sync`/`drifted`/`pending`/`blocked`/`unknown`) → 계획(설치·제거 목록)을 보여 주고 확인 → SSH로 적용 → 즉시 재수집으로 확인.
 - brew는 버전 고정을 받지 않는다. mise는 고정 버전을 받는다.
+
+구현:
+
+- 판정은 허브가 마지막 inventory로 한다. brew formula·cask는 설치되어 있으면, pacman은 `pacman -Qe`(직접 설치)에 있으면, mise는 `~/.config/mise/config.toml`이 그 버전을 요청하고 설치되어 있으면 present다. absent는 그 반대.
+- `blocked`: Windows, 해당 관리자가 없는 머신, `pacman_sudo`가 `no`인 머신. 이런 머신은 대상으로 저장할 수 없어서(API 400, 화면에서 선택 불가) 생긴 뒤에 관리자가 사라진 경우에만 보인다. `unknown`은 inventory가 없을 때, `pending`은 적용 중이거나 적용 후 재수집 중일 때.
+- 제거는 absent로 명시한 항목만. desired에 없는 패키지는 건드리지 않는다. AUR은 다루지 않는다.
+- 적용 스크립트(머신마다): 제거 먼저, 설치 나중. 명령 하나가 실패해도 나머지를 실행하고 하나라도 실패하면 종료 코드 1. brew는 `HOMEBREW_NO_AUTO_UPDATE=1`로 `brew install|uninstall --formula|--cask`, pacman은 `sudo -n pacman -S --needed --noconfirm` 뒤 `pacman -D --asexplicit`(의존성으로 이미 있던 패키지를 직접 설치로 표시), 제거는 `-Rns`, mise는 `mise use -g -y tool@ver`·`mise unuse -g -y`. 이름과 버전은 허용 문자만 받고 작은따옴표로 감싼다.
+- 적용은 P1 실행 경로(stdin 래퍼, SSE, 취소, 기록)를 그대로 쓰고 제한 시간은 30분. 사용자가 확인한 스크립트와 지금 계획이 다르면 실행하지 않는다. 대상이 끝나면 그 머신을 바로 다시 수집한다. 허브가 스스로 적용하는 일은 없다.
 
 ### P4 — 파일·키 desired state
 

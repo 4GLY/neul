@@ -126,22 +126,40 @@ interface LiveRun {
 	listeners: Set<(event: ExecEvent) => void>;
 }
 
+/** Called once a target's process has ended and its result is stored. */
+export type TargetDoneListener = (
+	run: { id: number; kind: "command" | "apply" },
+	machine: MachineRow,
+) => void;
+
 export class Executor {
 	private readonly live = new Map<number, LiveRun>();
 	private readonly busy = new Map<number, number>(); // machineId -> runId
 
-	constructor(private readonly store: Store) {}
+	constructor(
+		private readonly store: Store,
+		private readonly onTargetDone: TargetDoneListener = () => {},
+	) {}
 
 	/** Machines among `ids` that already have a running exec. */
 	busyMachines(ids: number[]): number[] {
 		return ids.filter((id) => this.busy.has(id));
 	}
 
+	/** Machines with a running apply (desired-state) target. */
+	applyingMachines(): number[] {
+		return [...this.busy].flatMap(([machineId, runId]) =>
+			this.live.get(runId)?.run.kind === "apply" ? [machineId] : [],
+		);
+	}
+
+	/** A target command of null runs `command`; apply runs give every machine its own script. */
 	start(request: {
+		kind: "command" | "apply";
 		command: string;
 		timeoutS: number;
 		createdBy: string;
-		machines: MachineRow[];
+		targets: { machine: MachineRow; command: string | null }[];
 	}): ExecRunDetail {
 		const { run, targetIds } = this.store.createExecRun({
 			...request,
@@ -151,7 +169,7 @@ export class Executor {
 		const live: LiveRun = {
 			run: base,
 			listeners: new Set(),
-			targets: request.machines.map((machine, i) => {
+			targets: request.targets.map(({ machine }, i) => {
 				const { output: _output, ...target } = targets[i] as ExecTargetDetail;
 				return {
 					targetId: targetIds[i] as number,
@@ -167,7 +185,12 @@ export class Executor {
 		this.live.set(run.id, live);
 		for (const t of live.targets) {
 			this.busy.set(t.machine.id, run.id);
-			void this.runTarget(live, t, request.command, request.timeoutS);
+			void this.runTarget(
+				live,
+				t,
+				t.target.command ?? request.command,
+				request.timeoutS,
+			);
 		}
 		return run;
 	}
@@ -327,6 +350,11 @@ export class Executor {
 		};
 		t.proc = null;
 		this.busy.delete(t.machine.id);
+		try {
+			this.onTargetDone(live.run, t.machine);
+		} catch (e) {
+			console.error(`after-exec hook for ${t.machine.name} failed:`, e);
+		}
 		this.emit(live, {
 			type: "exit",
 			machineId: t.machine.id,

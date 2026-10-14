@@ -5,6 +5,10 @@ import { probe } from "../collector/run.ts";
 import type {
 	AddMachineRequest,
 	AlertRules,
+	ApplyRequest,
+	DesiredInput,
+	DesiredManager,
+	DesiredUpdate,
 	ExecEvent,
 	ExecRequest,
 	Platform,
@@ -17,6 +21,12 @@ import type {
 import index from "../web/index.html";
 import { buildCompare } from "./compare.ts";
 import { Store } from "./db.ts";
+import {
+	blockedReason,
+	Desired,
+	NAME_PATTERN,
+	VERSION_PATTERN,
+} from "./desired.ts";
 import {
 	EXEC_DEFAULT_TIMEOUT_S,
 	EXEC_MAX_TIMEOUT_S,
@@ -47,7 +57,11 @@ const pusher = new Pusher(
 );
 const monitor = new Monitor(store, pusher);
 const hub = new Hub(store, (...args) => monitor.afterRun(...args));
-const executor = new Executor(store);
+// Apply targets re-collect their machine as soon as they finish (design.md §8 P3).
+const executor = new Executor(store, (run, machine) => {
+	if (run.kind === "apply") desired.afterApply(machine);
+});
+const desired = new Desired(store, hub, executor);
 const interrupted = store.interruptExecRuns(new Date().toISOString());
 if (interrupted)
 	console.log(
@@ -223,6 +237,77 @@ function validSettings(body: Partial<Settings>): Settings {
 	};
 }
 
+const DESIRED_MANAGERS: Record<DesiredManager, true> = {
+	brew_formula: true,
+	brew_cask: true,
+	pacman: true,
+	mise: true,
+};
+
+// Package installs can download a lot; apply targets get far longer than an ad hoc command.
+const APPLY_TIMEOUT_S = 1800;
+
+function validManager(value: unknown): DesiredManager {
+	if (typeof value !== "string" || !(value in DESIRED_MANAGERS))
+		throw new HttpError(400, `알 수 없는 관리 대상입니다: ${String(value)}`);
+	return value as DesiredManager;
+}
+
+/**
+ * Version, ensure and targets of a desired item. Targets must already be collected and able to
+ * apply the manager, so a desired state that can never be applied is never stored (design.md §1).
+ */
+function validDesiredFields(
+	manager: DesiredManager,
+	name: string,
+	body: { version?: unknown; ensure?: unknown; machineIds?: unknown },
+) {
+	const ensure = body.ensure;
+	if (ensure !== "present" && ensure !== "absent")
+		throw new HttpError(400, "ensure는 present 또는 absent여야 합니다");
+	let version: string | null = null;
+	if (manager === "mise") {
+		const raw = typeof body.version === "string" ? body.version.trim() : "";
+		if (raw && !VERSION_PATTERN.test(raw))
+			throw new HttpError(400, `올바르지 않은 버전입니다: ${raw}`);
+		if (ensure === "present" && !raw)
+			throw new HttpError(
+				400,
+				"mise 도구는 버전을 정해야 합니다 (예: latest, 22)",
+			);
+		version = raw || null;
+	} else if (
+		body.version !== undefined &&
+		body.version !== null &&
+		body.version !== ""
+	) {
+		throw new HttpError(400, "brew·pacman 패키지는 버전을 고정할 수 없습니다");
+	}
+	const ids = body.machineIds;
+	if (
+		!Array.isArray(ids) ||
+		ids.length === 0 ||
+		ids.some((id) => !Number.isInteger(id))
+	)
+		throw new HttpError(400, "적용할 머신을 하나 이상 고르세요");
+	if (new Set(ids).size !== ids.length)
+		throw new HttpError(400, "같은 머신이 두 번 들어 있습니다");
+	for (const id of ids as number[]) {
+		const machine = store.getMachine(id);
+		if (!machine) throw new HttpError(400, `없는 머신입니다: ${id}`);
+		const inventory = store.latestInventory(id)?.inventory ?? null;
+		const reason =
+			blockedReason(manager, machine, inventory) ??
+			(inventory ? null : "아직 수집되지 않았습니다");
+		if (reason)
+			throw new HttpError(
+				400,
+				`${machine.name}에 ${name}을(를) 적용할 수 없습니다: ${reason}`,
+			);
+	}
+	return { version, ensure, machineIds: ids as number[] } as const;
+}
+
 function validSubscription(body: Partial<PushSubscriptionInput>) {
 	const { endpoint, keys } = body;
 	if (
@@ -301,10 +386,11 @@ async function startExec(req: Request, server: Server<undefined>) {
 		);
 	}
 	const run = executor.start({
+		kind: "command",
 		command,
 		timeoutS,
 		createdBy: login,
-		machines,
+		targets: machines.map((machine) => ({ machine, command: null })),
 	});
 	return { id: run.id };
 }
@@ -493,6 +579,95 @@ const server = Bun.serve({
 					await readJson<Partial<SavedCommandInput>>(req),
 				);
 				return store.addSavedCommand(name, command);
+			}),
+		},
+		"/api/desired": {
+			GET: api(() => desired.view()),
+			POST: api(async (req) => {
+				const body = await readJson<Partial<DesiredInput>>(req);
+				const manager = validManager(body.manager);
+				const name = typeof body.name === "string" ? body.name.trim() : "";
+				if (!NAME_PATTERN.test(name))
+					throw new HttpError(400, `올바르지 않은 이름입니다: ${name}`);
+				if (
+					store
+						.listDesired()
+						.some((d) => d.manager === manager && d.name === name)
+				)
+					throw new HttpError(400, `이미 관리 중인 항목입니다: ${name}`);
+				return store.addDesired({
+					manager,
+					name,
+					...validDesiredFields(manager, name, body),
+				});
+			}),
+		},
+		"/api/desired/candidates": api((req) => {
+			const params = new URL(req.url).searchParams;
+			const name = params.get("name") ?? "";
+			if (!NAME_PATTERN.test(name))
+				throw new HttpError(400, `올바르지 않은 이름입니다: ${name}`);
+			return desired.candidates(validManager(params.get("manager")), name);
+		}),
+		"/api/desired/plan": api(() => desired.plans()),
+		"/api/desired/apply": {
+			POST: api(async (req, srv) => {
+				const login = authenticate(req, srv);
+				const body = await readJson<Partial<ApplyRequest>>(req);
+				if (!Array.isArray(body.plans) || body.plans.length === 0)
+					throw new HttpError(400, "적용할 머신을 하나 이상 고르세요");
+				const current = new Map(desired.plans().map((p) => [p.machineId, p]));
+				const confirmed = body.plans.map(({ machineId, command }) => {
+					const plan = current.get(machineId);
+					if (!plan || plan.command !== command)
+						throw new HttpError(
+							409,
+							"계획이 바뀌었습니다. 새 계획을 확인한 뒤 다시 적용하세요",
+						);
+					const machine = store.getMachine(machineId);
+					if (!machine)
+						throw new HttpError(400, `없는 머신입니다: ${machineId}`);
+					return { plan, machine };
+				});
+				const busy = executor.busyMachines(confirmed.map((c) => c.machine.id));
+				if (busy.length > 0)
+					throw new HttpError(
+						409,
+						"명령을 실행 중인 머신이 있습니다. 끝난 뒤 다시 적용하세요",
+					);
+				const run = executor.start({
+					kind: "apply",
+					command: `맞추기 적용 · ${confirmed
+						.map(({ plan }) => `${plan.machineName} ${plan.steps.length}건`)
+						.join(", ")}`,
+					timeoutS: APPLY_TIMEOUT_S,
+					createdBy: login,
+					targets: confirmed.map(({ plan, machine }) => ({
+						machine,
+						command: plan.command,
+					})),
+				});
+				return { id: run.id };
+			}),
+		},
+		"/api/desired/:id": {
+			PATCH: api(async (req) => {
+				const item = store.getDesired(Number(req.params.id));
+				if (!item) throw new HttpError(404, "관리 항목을 찾을 수 없습니다");
+				const body = await readJson<DesiredUpdate>(req);
+				store.updateDesired(
+					item.id,
+					validDesiredFields(item.manager, item.name, {
+						version: body.version === undefined ? item.version : body.version,
+						ensure: body.ensure ?? item.ensure,
+						machineIds: body.machineIds ?? item.machineIds,
+					}),
+				);
+				return store.getDesired(item.id);
+			}),
+			DELETE: api((req) => {
+				store.deleteDesired(Number(req.params.id));
+				return { ok: true };
 			}),
 		},
 		"/api/alerts": api((req) => {

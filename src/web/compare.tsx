@@ -3,7 +3,10 @@ import type {
 	CompareMachine,
 	CompareSection,
 	CompareView,
+	DesiredItem,
+	DesiredManager,
 } from "../shared/types";
+import { AdoptButton, useManagedItems } from "./desired";
 import {
 	Empty,
 	ErrorNotice,
@@ -13,10 +16,19 @@ import {
 	useResource,
 } from "./ui";
 
+const SECTION_MANAGERS: Record<CompareSection["id"], DesiredManager | null> = {
+	brewFormulae: "brew_formula",
+	brewCasks: "brew_cask",
+	pacman: "pacman",
+	mise: "mise",
+	files: null,
+};
+
 export function Compare() {
 	const { data, error, loading, refresh } =
 		useResource<CompareView>("/api/compare");
 	const [differentOnly, setDifferentOnly] = useState(true);
+	const { managed, refresh: refreshManaged } = useManagedItems();
 	const [search, setSearch] = useState("");
 	const query = useDeferredValue(search.trim().toLowerCase());
 	return (
@@ -66,6 +78,8 @@ export function Compare() {
 							machines={data.machines}
 							differentOnly={differentOnly}
 							query={query}
+							managed={managed}
+							onManagedChange={refreshManaged}
 						/>
 					))}
 				</div>
@@ -85,12 +99,17 @@ const Matrix = memo(function Matrix({
 	machines,
 	differentOnly,
 	query,
+	managed,
+	onManagedChange,
 }: {
 	section: CompareSection;
 	machines: CompareMachine[];
 	differentOnly: boolean;
 	query: string;
+	managed: Map<string, DesiredItem>;
+	onManagedChange: () => void;
 }) {
+	const manager = SECTION_MANAGERS[section.id];
 	const applicable = useMemo(
 		() => new Set(section.machineIds),
 		[section.machineIds],
@@ -156,7 +175,17 @@ const Matrix = memo(function Matrix({
 									className={row.uniform ? "" : "different-row"}
 								>
 									<th scope="row" className="mono" title={row.key}>
-										{row.key}
+										<div className="row-key-cell">
+											<span>{row.key}</span>
+											{manager && !row.dependencyOnly ? (
+												<AdoptButton
+													manager={manager}
+													name={row.key}
+													managed={managed}
+													onChanged={onManagedChange}
+												/>
+											) : null}
+										</div>
 									</th>
 									{machines.map((machine) => {
 										const applies = applicable.has(machine.id);

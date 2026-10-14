@@ -22,6 +22,12 @@ import {
 } from "./ui";
 
 const DEFAULT_TIMEOUT_S = 300;
+// CSI sequences (colors, cursor moves); built from the code point to keep a control
+// character out of the regex literal.
+const ANSI_ESCAPE = new RegExp(
+	`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`,
+	"g",
+);
 
 interface Draft {
 	command: string;
@@ -617,9 +623,15 @@ export function ExecRunView({ id }: { id: number }) {
 								실행 취소
 							</button>
 						) : null}
-						<button type="button" onClick={rerun}>
-							다시 실행
-						</button>
+						{run.kind === "apply" ? (
+							<a className="button" href="#/desired">
+								맞추기로
+							</a>
+						) : (
+							<button type="button" onClick={rerun}>
+								다시 실행
+							</button>
+						)}
 					</PageHeading>
 					<ErrorNotice message={actionError} />
 					{reconnecting && running ? (
@@ -631,7 +643,9 @@ export function ExecRunView({ id }: { id: number }) {
 					) : null}
 					<section className="panel" aria-labelledby="command-title">
 						<div className="section-heading">
-							<h2 id="command-title">명령</h2>
+							<h2 id="command-title">
+								{run.kind === "apply" ? "맞추기 적용" : "명령"}
+							</h2>
 							<span className="muted small">
 								{run.targets.length}대
 								{run.finishedAt
@@ -683,6 +697,12 @@ function OutputPanel({
 					{duration(target.startedAt, target.finishedAt, now)}
 				</span>
 			</div>
+			{target.command ? (
+				<details className="target-command">
+					<summary className="small">이 머신에서 실행한 명령</summary>
+					<pre className="exec-command">{target.command}</pre>
+				</details>
+			) : null}
 			<pre
 				ref={ref}
 				className="exec-output"
@@ -699,7 +719,8 @@ function OutputPanel({
 							key={i}
 							className={chunk.stream}
 						>
-							{chunk.data.replace(/\r\n?/g, "\n")}
+							{/* Tools like mise color their output even without a TTY. */}
+							{chunk.data.replace(ANSI_ESCAPE, "").replace(/\r\n?/g, "\n")}
 						</span>
 					))
 				) : (

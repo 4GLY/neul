@@ -1,6 +1,12 @@
 import type { FormEvent, ReactNode } from "react";
 import { useDeferredValue, useState } from "react";
-import type { Inventory, MachineDetail, Platform } from "../shared/types";
+import type {
+	DesiredManager,
+	Inventory,
+	MachineDetail,
+	Platform,
+} from "../shared/types";
+import { AdoptButton, useManagedItems } from "./desired";
 import {
 	api,
 	bytes,
@@ -423,17 +429,27 @@ function InventoryTable({
 	tab: InventoryTab;
 	query: string;
 }) {
+	const { managed, refresh } = useManagedItems();
 	const source = inventory[tab];
 	if (source === null)
 		return <Empty title="이 머신에서 수집하지 않는 항목입니다." />;
+	const adopt = (manager: DesiredManager, name: string) => (
+		<AdoptButton
+			key="adopt"
+			manager={manager}
+			name={name}
+			managed={managed}
+			onChanged={() => void refresh()}
+		/>
+	);
 	const headers =
 		tab === "files"
 			? ["경로", "종류", "SHA-256", "크기", "링크 대상"]
 			: tab === "mise"
-				? ["도구", "활성 버전", "요청 버전", "설치 버전", "설정 원본"]
+				? ["도구", "활성 버전", "요청 버전", "설치 버전", "설정 원본", "관리"]
 				: tab === "pacmanExplicit"
-					? ["패키지", "버전"]
-					: ["패키지", "설치 버전", "설치 방식"];
+					? ["패키지", "버전", "관리"]
+					: ["패키지", "설치 버전", "설치 방식", "관리"];
 	let rows: { key: string; search: string; cells: ReactNode[] }[];
 	if (tab === "files")
 		rows = (inventory.files ?? []).map((file) => ({
@@ -463,13 +479,14 @@ function InventoryTable({
 				tool.requestedVersion ?? "—",
 				tool.installedVersions.join(", ") || "—",
 				tool.source ?? "—",
+				tool.requestedVersion ? adopt("mise", tool.name) : "",
 			],
 		}));
 	else if (tab === "pacmanExplicit")
 		rows = (inventory.pacmanExplicit ?? []).map((pkg) => ({
 			key: pkg.name,
 			search: `${pkg.name} ${pkg.version}`,
-			cells: [pkg.name, pkg.version],
+			cells: [pkg.name, pkg.version, adopt("pacman", pkg.name)],
 		}));
 	else
 		rows = (inventory[tab] ?? []).map((pkg) => ({
@@ -487,6 +504,11 @@ function InventoryTable({
 						의존성
 					</span>
 				),
+				tab === "brewCasks"
+					? adopt("brew_cask", pkg.name)
+					: pkg.onRequest
+						? adopt("brew_formula", pkg.name)
+						: "",
 			],
 		}));
 	const visible = query

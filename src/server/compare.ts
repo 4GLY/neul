@@ -77,6 +77,17 @@ export function buildCompare(machines: CompareInput[]): CompareView {
 			inv.files ? new Map(inv.files.map((f) => [f.path, fileCell(f)])) : null,
 		),
 	].filter((s): s is CompareSection => s !== null);
+	// Only formulae installed on request somewhere can be adopted; dependencies come along.
+	const leaves = new Set(
+		machines.flatMap(
+			(m) =>
+				m.inventory?.brewFormulae
+					?.filter((p) => p.onRequest)
+					.map((p) => p.name) ?? [],
+		),
+	);
+	for (const row of sections.find((s) => s.id === "brewFormulae")?.rows ?? [])
+		row.dependencyOnly = !leaves.has(row.key);
 	return {
 		machines: machines.map(({ id, name, status }) => ({ id, name, status })),
 		sections,

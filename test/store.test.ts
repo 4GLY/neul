@@ -108,8 +108,18 @@ describe("buildCompare", () => {
 		const brew = view.sections.find((s) => s.id === "brewFormulae");
 		expect(brew?.machineIds).toEqual([1, 2]); // machines without brew get no column
 		expect(brew?.rows).toEqual([
-			{ key: "git", cells: { 1: "2", 2: "2" }, uniform: true },
-			{ key: "jq", cells: { 1: "1", 2: null }, uniform: false },
+			{
+				key: "git",
+				cells: { 1: "2", 2: "2" },
+				uniform: true,
+				dependencyOnly: false,
+			},
+			{
+				key: "jq",
+				cells: { 1: "1", 2: null },
+				uniform: false,
+				dependencyOnly: false,
+			},
 		]);
 		expect(view.sections.map((s) => s.id)).toEqual(["brewFormulae"]);
 		expect(view.machines).toHaveLength(4);

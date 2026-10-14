@@ -21,11 +21,12 @@ function setup(): { store: Store; a: MachineRow; b: MachineRow } {
 
 function start(store: Store, machines: MachineRow[], command = "true") {
 	const { run, targetIds } = store.createExecRun({
+		kind: "command",
 		command,
 		timeoutS: 60,
 		createdBy: "local",
 		createdAt: "2026-10-14T00:00:00.000Z",
-		machines,
+		targets: machines.map((machine) => ({ machine, command: null })),
 	});
 	return { id: run.id, targetIds: targetIds as [number, ...number[]] };
 }
