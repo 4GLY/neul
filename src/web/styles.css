@@ -1159,11 +1159,18 @@ th {
 		min-height: var(--space-16);
 	}
 	nav {
-		gap: var(--space-5);
+		gap: var(--space-4);
 	}
+	nav a {
+		white-space: nowrap;
+	}
+	/* Five menu items leave no room for the login label on a phone. */
 	.hub-label {
-		font-size: var(--text-xs);
-		max-width: 80px;
+		display: none;
+	}
+	.threshold-row {
+		grid-template-columns: 1fr;
+		gap: var(--space-2);
 	}
 	.app-main {
 		padding: var(--space-6) var(--space-4);

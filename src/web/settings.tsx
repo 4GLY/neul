@@ -23,7 +23,9 @@ export function Settings() {
 			/>
 			<ErrorNotice message={error} retry={() => void refresh()} />
 			{loading ? <Loading /> : data ? <SettingsForm initial={data} /> : null}
-			<PushSettings />
+			<div className="settings-form">
+				<PushSettings />
+			</div>
 		</>
 	);
 }
