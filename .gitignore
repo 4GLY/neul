@@ -1,58 +1,6 @@
-# ── Go ─────────────────────────────────────────────────────
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-*.test
-*.out
-/bin/
-/dist/
-/build/
-coverage.out
-coverage.html
-vendor/
-go.work.sum
-
-# ── Node / Vite (web/) ─────────────────────────────────────
-web/node_modules/
-web/dist/
-web/.vite/
-web/.turbo/
-web/coverage/
-web/test-results/
-
-# ── Codex / QA 실행 산출물 ─────────────────────────────────
-.omo/
-evidence/
-web/design-qa.md
-web/design-qa-screenshot.png
-
-# ── 런타임 데이터 (self-hosted dev) ─────────────────────────
-.demo/
-/data/
+node_modules/
+.local/
 *.db
-*.db-journal
-*.sqlite
-*.sqlite-journal
-
-# ── Secrets & 환경 ─────────────────────────────────────────
-.env
-.env.*
-!.env.example
-*.key
-*.pem
-secrets/
-
-# ── 에디터 / OS ────────────────────────────────────────────
+*.db-shm
+*.db-wal
 .DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# ── direnv ─────────────────────────────────────────────────
-.direnv/
-.envrc.local

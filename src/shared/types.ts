@@ -1,0 +1,154 @@
+// API contract shared by the hub (src/server) and the web UI (src/web). See docs/design.md §6.
+
+export type Transport = "local" | "ssh";
+export type Platform = "posix" | "windows";
+export type RunStatus = "ok" | "unreachable" | "error";
+export type MachineStatus = "online" | "unreachable" | "error" | "unknown";
+
+export interface Facts {
+	hostname: string | null;
+	os: string | null; // uname -s: Darwin | Linux | Windows
+	osName: string | null; // "macOS 26.1", "Arch Linux", "Windows 11 Pro"
+	kernel: string | null;
+	arch: string | null;
+	model: string | null;
+	user: string | null;
+	cpuCount: number | null;
+	uptimeS: number | null;
+	load: [number, number, number] | null;
+	memTotalB: number | null;
+	memAvailableB: number | null;
+	disk: {
+		path: string;
+		totalB: number;
+		usedB: number;
+		availableB: number;
+	} | null;
+	battery: { percent: number; state: string } | null;
+}
+
+export interface BrewPackage {
+	name: string;
+	versions: string[];
+	onRequest: boolean; // formula installed on request (brew leaves); always true for casks
+}
+
+export interface PacmanPackage {
+	name: string;
+	version: string;
+}
+
+export interface MiseTool {
+	name: string;
+	activeVersion: string | null; // version active in $HOME context (global config)
+	requestedVersion: string | null; // e.g. "latest", "24", "1.14"
+	installedVersions: string[];
+	source: string | null; // config file that requests it
+}
+
+export type FileKind = "file" | "symlink" | "dir" | "broken" | "missing";
+
+export interface TrackedFile {
+	path: string; // relative to $HOME (or the unmatched pattern when kind = "missing")
+	kind: FileKind;
+	sha256: string | null;
+	size: number | null;
+	linkTarget: string | null;
+}
+
+export interface Inventory {
+	brewFormulae: BrewPackage[] | null; // null = brew not present
+	brewCasks: BrewPackage[] | null;
+	pacmanExplicit: PacmanPackage[] | null; // null = pacman not present
+	pacmanTotal: number | null;
+	mise: MiseTool[] | null; // null = mise not present
+	files: TrackedFile[] | null; // null = not collected (e.g. windows)
+}
+
+export interface InventoryCounts {
+	brewFormulae: number | null;
+	brewLeaves: number | null;
+	brewCasks: number | null;
+	pacmanExplicit: number | null;
+	pacmanTotal: number | null;
+	miseTools: number | null;
+	files: number | null;
+}
+
+export interface RunSummary {
+	id: number;
+	machineId: number;
+	startedAt: string; // ISO 8601 UTC
+	finishedAt: string;
+	durationMs: number;
+	status: RunStatus;
+	error: string | null;
+	inventoryChanged: boolean; // this run produced a new inventory version
+}
+
+export interface MachineSummary {
+	id: number;
+	name: string;
+	alias: string;
+	transport: Transport;
+	platform: Platform;
+	enabled: boolean;
+	status: MachineStatus;
+	collecting: boolean; // a collection is in flight right now
+	lastRun: RunSummary | null;
+	lastSeenAt: string | null; // finishedAt of the last ok run
+	facts: Facts | null; // from the last ok run
+	counts: InventoryCounts | null; // from the latest inventory
+}
+
+export interface MachineDetail extends MachineSummary {
+	inventory: Inventory | null;
+	inventorySince: string | null; // first_seen_at of the current inventory version
+	recentRuns: RunSummary[]; // newest first, at most 50
+}
+
+export interface CompareMachine {
+	id: number;
+	name: string;
+	status: MachineStatus;
+}
+
+export interface CompareRow {
+	key: string; // package / tool name, or file path
+	cells: Record<number, string | null>; // machineId -> value (version, short hash, "missing", "→ target"); null = absent
+	uniform: boolean; // every machine that has the category reports the same value
+}
+
+export interface CompareSection {
+	id: "brewFormulae" | "brewCasks" | "mise" | "pacman" | "files";
+	title: string;
+	machineIds: number[]; // machines that report this category (columns that apply)
+	rows: CompareRow[];
+}
+
+export interface CompareView {
+	machines: CompareMachine[];
+	sections: CompareSection[];
+}
+
+export interface Settings {
+	trackedPaths: string[];
+	collectIntervalMin: number;
+}
+
+export interface AddMachineRequest {
+	alias: string;
+	name?: string;
+	transport?: Transport;
+	platform?: Platform; // omitted = auto-detect
+}
+
+export interface UpdateMachineRequest {
+	name?: string;
+	enabled?: boolean;
+	platform?: Platform;
+}
+
+export interface ApiError {
+	error: string;
+}
